@@ -53,17 +53,16 @@ export const buildExcerpt = (value: string, maxLines = 4, maxChars = 360): strin
   return excerpt.length > maxChars ? `${excerpt.slice(0, maxChars - 1)}...` : excerpt
 }
 
-export const isMentioned = (text: string, slackUserId: string): boolean =>
-  text.includes(`<@${slackUserId}>`)
-
-export const shouldTrackMessage = (
-  message: SlackMessageProjectionInput,
-  existingCard: boolean
-): boolean =>
-  existingCard ||
-  message.userId === message.mySlackUserId ||
-  message.parentUserId === message.mySlackUserId ||
-  isMentioned(message.text, message.mySlackUserId)
+export const shouldTrackThread = (
+  messages: ReadonlyArray<SlackMessageProjectionInput>
+): boolean => {
+  const hasThreadedReply = messages.some((message) => message.messageTs !== message.rootThreadTs)
+  const hasTrackedUserMessage = messages.some((message) =>
+    message.userId === message.mySlackUserId ||
+    message.parentUserId === message.mySlackUserId
+  )
+  return hasThreadedReply && hasTrackedUserMessage
+}
 
 const trimUrl = (value: string): string => {
   const withoutSlackLabel = value.split("|")[0] ?? value

@@ -73,6 +73,16 @@ export interface AppMetaResponse {
   readonly trackedUser: TrackedSlackUser
 }
 
+export interface MentionLabelsRequest {
+  readonly userIds: ReadonlyArray<string>
+  readonly subteamIds: ReadonlyArray<string>
+}
+
+export interface MentionLabelsResponse {
+  readonly users: Record<string, string | null>
+  readonly subteams: Record<string, string | null>
+}
+
 export interface SettingsResponse {
   readonly slackUserId: string
   readonly trackedUser: TrackedSlackUser

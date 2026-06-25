@@ -13,6 +13,7 @@ oauth_config:
       - im:read
       - mpim:history
       - mpim:read
+      - usergroups:read
       - users:read
   pkce_enabled: false
 settings:

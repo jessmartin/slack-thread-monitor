@@ -22,6 +22,18 @@ interface SlackActorProfile {
   readonly imageUrl: string | null
 }
 
+interface SocketMessageEventSource {
+  readonly message: unknown
+  readonly isMessageChanged: boolean
+  readonly fallbackChannelId: string | null
+  readonly fallbackTeamId: string | null
+}
+
+interface SocketMessageProjectionResult {
+  readonly message: SlackMessageProjectionInput
+  readonly shouldFetchThread: boolean
+}
+
 const ignoredMessageSubtypes = new Set([
   "channel_archive",
   "channel_join",
@@ -37,7 +49,6 @@ const ignoredMessageSubtypes = new Set([
   "group_purpose",
   "group_topic",
   "group_unarchive",
-  "message_changed",
   "message_deleted",
   "message_replied"
 ])
@@ -298,6 +309,61 @@ const slackUser = Effect.fn("SlackApiClient.getUser")(function*(slackUserId: str
   return trackedUserFromSlackUser(slackUserId, getObjectField(body, "user"))
 })
 
+const slackUserMentionLabels = Effect.fn("SlackApiClient.getUserMentionLabels")(function*(
+  userIds: ReadonlyArray<string>
+) {
+  const labels: Record<string, string | null> = {}
+
+  yield* Effect.forEach(
+    userIds,
+    (userId) =>
+      Effect.gen(function*() {
+        const user = yield* slackUser(userId).pipe(Effect.catchCause(() => Effect.succeed(null)))
+        labels[userId] = user?.name ?? null
+      }),
+    { discard: true }
+  )
+
+  return labels
+})
+
+const slackSubteamMentionLabels = Effect.fn("SlackApiClient.getSubteamMentionLabels")(function*(
+  subteamIds: ReadonlyArray<string>
+) {
+  const labels: Record<string, string | null> = {}
+  for (const subteamId of subteamIds) {
+    labels[subteamId] = null
+  }
+
+  if (subteamIds.length === 0) {
+    return labels
+  }
+
+  const body = yield* slackApiCall(
+    "usergroups.list",
+    {
+      include_users: "false",
+      include_disabled: "true",
+      include_count: "false"
+    },
+    "user"
+  ).pipe(Effect.catchCause(() => Effect.succeed(null)))
+
+  if (body === null) {
+    return labels
+  }
+
+  for (const usergroup of getArrayField(body, "usergroups")) {
+    const id = getStringField(usergroup, "id")
+    if (id === null || labels[id] === undefined) {
+      continue
+    }
+    labels[id] = getStringField(usergroup, "handle") ?? getStringField(usergroup, "name")
+  }
+
+  return labels
+})
+
 const slackSocketUrl = Effect.fn("SlackApiClient.openSocketUrl")(function*() {
   const body = yield* slackApiCall("apps.connections.open", {}, "app")
   const url = getStringField(body, "url")
@@ -323,7 +389,9 @@ export class SlackApiClient extends Context.Service<SlackApiClient>()(
       getActorName: slackActorName,
       getActorProfile: slackActorProfile,
       getChannelName: slackChannelName,
+      getSubteamMentionLabels: slackSubteamMentionLabels,
       getUser: slackUser,
+      getUserMentionLabels: slackUserMentionLabels,
       openSocketUrl: slackSocketUrl,
       pagedItems: slackPagedItems
     })
@@ -337,22 +405,60 @@ type AppRuntime = ManagedRuntime.ManagedRuntime<
   never
 >
 
-const messageReferencesUser = (message: unknown, slackUserId: string): boolean =>
-  getStringField(message, "user") === slackUserId ||
-  getStringField(message, "parent_user_id") === slackUserId ||
-  (getStringField(message, "text") ?? "").includes(`<@${slackUserId}>`)
+const rawSlackThreadMatchesTrackingRule = (
+  messages: ReadonlyArray<unknown>,
+  trackedSlackUserId: string,
+  rootThreadTs: string
+): boolean => {
+  const hasThreadedReply = messages.some((message) => {
+    const messageTs = getStringField(message, "ts")
+    return messageTs !== null && messageTs !== rootThreadTs
+  })
+  const hasTrackedUserMessage = messages.some((message) =>
+    getStringField(message, "user") === trackedSlackUserId ||
+    getStringField(message, "parent_user_id") === trackedSlackUserId
+  )
+  return hasThreadedReply && hasTrackedUserMessage
+}
 
 const shouldIgnoreSlackMessageEvent = (event: unknown): boolean => {
+  const subtype = getStringField(event, "subtype")
+  if (subtype === "message_changed") {
+    return getObjectField(event, "message") === undefined
+  }
+
   if (getBooleanField(event, "hidden")) {
     return true
   }
 
-  const subtype = getStringField(event, "subtype")
   return subtype !== null && ignoredMessageSubtypes.has(subtype)
+}
+
+const socketMessageEventSource = (event: unknown): SocketMessageEventSource | null => {
+  if (getStringField(event, "type") !== "message" || shouldIgnoreSlackMessageEvent(event)) {
+    return null
+  }
+
+  if (getStringField(event, "subtype") === "message_changed") {
+    return {
+      message: getObjectField(event, "message"),
+      isMessageChanged: true,
+      fallbackChannelId: getStringField(event, "channel"),
+      fallbackTeamId: getStringField(event, "team")
+    }
+  }
+
+  return {
+    message: event,
+    isMessageChanged: false,
+    fallbackChannelId: null,
+    fallbackTeamId: null
+  }
 }
 
 const slackMessageFromApiMessage = (
   message: unknown,
+  eventIdPrefix: string,
   teamId: string | null,
   channelId: string,
   channelName: string | null,
@@ -367,7 +473,7 @@ const slackMessageFromApiMessage = (
   }
 
   const userId = getStringField(message, "user") ?? getStringField(message, "bot_id")
-  const eventId = `backfill:${channelId}:${messageTs}`
+  const eventId = `${eventIdPrefix}:${channelId}:${messageTs}`
 
   return {
     teamId,
@@ -461,13 +567,11 @@ const backfillProgram = (days: number) =>
           ts: rootTs
         }).pipe(Effect.catchCause(() => Effect.succeed<ReadonlyArray<unknown>>([])))
 
-        const involved = exists || replies.some((reply) => messageReferencesUser(reply, trackedSlackUserId))
-
-        if (!involved) {
+        if (!rawSlackThreadMatchesTrackingRule(replies, trackedSlackUserId, rootTs)) {
           continue
         }
 
-        let createdThisThread = false
+        const normalizedMessages: Array<SlackMessageProjectionInput> = []
         for (const reply of replies.toSorted((left, right) =>
           (getStringField(left, "ts") ?? "").localeCompare(getStringField(right, "ts") ?? "")
         )) {
@@ -477,6 +581,7 @@ const backfillProgram = (days: number) =>
           )
           const normalized = slackMessageFromApiMessage(
             reply,
+            "backfill",
             workspace.id,
             channelId,
             channelName,
@@ -489,14 +594,12 @@ const backfillProgram = (days: number) =>
             continue
           }
 
-          const result = yield* workflows.ingestSlackMessage(normalized)
-          messagesIngested += 1
-          if (result !== null) {
-            createdThisThread = true
-          }
+          normalizedMessages.push(normalized)
         }
 
-        if (createdThisThread) {
+        const result = yield* workflows.ingestSlackThread(normalizedMessages)
+        messagesIngested += normalizedMessages.length
+        if (result !== null) {
           threadsCreated += exists ? 0 : 1
         }
       }
@@ -593,27 +696,29 @@ const socketMessageProjection = async (
   actorNameCache: Map<string, Promise<SlackActorProfile>>,
   payload: unknown,
   event: unknown
-): Promise<SlackMessageProjectionInput | null> => {
-  if (getStringField(event, "type") !== "message" || shouldIgnoreSlackMessageEvent(event)) {
+): Promise<SocketMessageProjectionResult | null> => {
+  const source = socketMessageEventSource(event)
+  if (source === null) {
     return null
   }
 
-  const channelId = getStringField(event, "channel")
-  const messageTs = getStringField(event, "ts")
+  const message = source.message
+  const channelId = getStringField(message, "channel") ?? source.fallbackChannelId
+  const messageTs = getStringField(message, "ts")
   if (channelId === null || messageTs === null) {
     return null
   }
 
-  const rootThreadTs = getStringField(event, "thread_ts") ?? messageTs
-  const teamId = getStringField(payload, "team_id") ?? getStringField(event, "team")
-  const userId = getStringField(event, "user") ?? getStringField(event, "bot_id")
+  const rootThreadTs = getStringField(message, "thread_ts") ?? messageTs
+  const teamId = getStringField(payload, "team_id") ?? getStringField(message, "team") ?? source.fallbackTeamId
+  const userId = getStringField(message, "user") ?? getStringField(message, "bot_id")
   const [channelName, actorProfile, trackedSlackUserId] = await Promise.all([
     cachedChannelName(runtime, channelNameCache, channelId),
-    cachedActorName(runtime, actorNameCache, userId, event),
+    cachedActorName(runtime, actorNameCache, userId, message),
     runtime.runPromise(ThreadWorkflows.use((workflows) => workflows.getTrackedSlackUserId()))
   ])
 
-  return {
+  const projection: SlackMessageProjectionInput = {
     teamId,
     eventId: getStringField(payload, "event_id") ?? `socket:${channelId}:${messageTs}`,
     eventTs: messageTs,
@@ -622,15 +727,69 @@ const socketMessageProjection = async (
     messageTs,
     rootThreadTs,
     userId,
-    parentUserId: getStringField(event, "parent_user_id"),
+    parentUserId: getStringField(message, "parent_user_id"),
     userName: actorProfile.name,
     userImageUrl: actorProfile.imageUrl,
-    text: getStringField(event, "text") ?? "",
+    text: getStringField(message, "text") ?? "",
     rawJson: stringifySlackPayload(payload),
     mySlackUserId: trackedSlackUserId,
     slackPermalink: buildSlackNativeMessageUrl(teamId, channelId, rootThreadTs),
     linearWorkspaceUrl: config.linearWorkspaceUrl
   }
+
+  return {
+    message: projection,
+    shouldFetchThread: source.isMessageChanged || messageTs !== rootThreadTs
+  }
+}
+
+const socketThreadProjections = async (
+  config: AppConfig,
+  runtime: AppRuntime,
+  actorNameCache: Map<string, Promise<SlackActorProfile>>,
+  eventProjection: SlackMessageProjectionInput,
+  shouldFetchThread: boolean
+): Promise<ReadonlyArray<SlackMessageProjectionInput>> => {
+  if (!shouldFetchThread) {
+    return [eventProjection]
+  }
+
+  const replies = await runtime.runPromise(
+    SlackApiClient.use((slack) =>
+      slack.pagedItems("conversations.replies", "messages", {
+        channel: eventProjection.channelId,
+        ts: eventProjection.rootThreadTs
+      }).pipe(Effect.catchCause(() => Effect.succeed<ReadonlyArray<unknown>>([])))
+    )
+  )
+
+  const projections: Array<SlackMessageProjectionInput> = [eventProjection]
+  for (const reply of replies.toSorted((left, right) =>
+    (getStringField(left, "ts") ?? "").localeCompare(getStringField(right, "ts") ?? "")
+  )) {
+    if (shouldIgnoreSlackMessageEvent(reply)) {
+      continue
+    }
+
+    const userId = getStringField(reply, "user") ?? getStringField(reply, "bot_id")
+    const actorProfile = await cachedActorName(runtime, actorNameCache, userId, reply)
+    const normalized = slackMessageFromApiMessage(
+      reply,
+      "thread",
+      eventProjection.teamId,
+      eventProjection.channelId,
+      eventProjection.channelName,
+      eventProjection.rootThreadTs,
+      actorProfile,
+      eventProjection.mySlackUserId,
+      config.linearWorkspaceUrl
+    )
+    if (normalized !== null) {
+      projections.push(normalized)
+    }
+  }
+
+  return projections
 }
 
 const acknowledgeEnvelope = (socket: WebSocket, envelope: unknown): void => {
@@ -675,13 +834,20 @@ export const startSlackEventListener = (
 
     const payload = getObjectField(envelope, "payload")
     const event = getObjectField(payload, "event")
-    const projection = await socketMessageProjection(config, runtime, channelNameCache, actorNameCache, payload, event)
-    if (projection === null) {
+    const projectionResult = await socketMessageProjection(config, runtime, channelNameCache, actorNameCache, payload, event)
+    if (projectionResult === null) {
       return
     }
 
+    const projections = await socketThreadProjections(
+      config,
+      runtime,
+      actorNameCache,
+      projectionResult.message,
+      projectionResult.shouldFetchThread
+    )
     const threadKey = await runtime.runPromise(
-      ThreadWorkflows.use((workflows) => workflows.ingestSlackMessage(projection))
+      ThreadWorkflows.use((workflows) => workflows.ingestSlackThread(projections))
     )
     if (threadKey !== null) {
       console.log(`Updated Slack thread ${threadKey}`)

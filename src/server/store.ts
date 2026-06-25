@@ -222,11 +222,16 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             thread_key text not null,
             message_ts text not null,
             user_id text,
+            parent_user_id text,
             text text not null,
             created_at text not null,
             unique(thread_key, message_ts)
           )
         `
+        const messageColumns = yield* sql<{ readonly name: string }>`pragma table_info(thread_messages)`
+        if (!messageColumns.some((column) => column.name === "parent_user_id")) {
+          yield* sql`alter table thread_messages add column parent_user_id text`
+        }
         yield* sql`
           create table if not exists thread_references (
             id integer primary key autoincrement,
@@ -249,6 +254,43 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             updated_at text not null
           )
         `
+      }),
+
+      pruneCardsOutsideTrackingRule: Effect.fn("ThreadStore.pruneCardsOutsideTrackingRule")(function*(
+        trackedSlackUserId: string
+      ) {
+        const sql = yield* SqlClient.SqlClient
+        const invalidCards = yield* sql<{ readonly thread_key: string }>`
+          select
+            c.thread_key
+          from thread_cards c
+          left join thread_messages m on m.thread_key = c.thread_key
+          group by c.thread_key
+          having
+            sum(case when m.message_ts <> c.root_thread_ts then 1 else 0 end) = 0 or
+            sum(case when m.user_id = ${trackedSlackUserId} or m.parent_user_id = ${trackedSlackUserId} then 1 else 0 end) = 0
+        `
+
+        yield* Effect.forEach(
+          invalidCards,
+          (card) =>
+            Effect.gen(function*() {
+              yield* sql`delete from thread_references where thread_key = ${card.thread_key}`
+              yield* sql`delete from thread_messages where thread_key = ${card.thread_key}`
+              yield* sql`delete from thread_cards where thread_key = ${card.thread_key}`
+            }),
+          { discard: true }
+        )
+        yield* sql`
+          delete from thread_references
+          where thread_key not in (select thread_key from thread_cards)
+        `
+        yield* sql`
+          delete from thread_messages
+          where thread_key not in (select thread_key from thread_cards)
+        `
+
+        return invalidCards.length
       }),
 
       ensureSlackUserId: Effect.fn("ThreadStore.ensureSlackUserId")(function*(slackUserId: string) {
@@ -331,6 +373,11 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
           select thread_key from thread_cards where thread_key = ${threadKey} limit 1
         `
         return rows.length > 0
+      }),
+
+      clearReferencesForThread: Effect.fn("ThreadStore.clearReferencesForThread")(function*(threadKey: string) {
+        const sql = yield* SqlClient.SqlClient
+        yield* sql`delete from thread_references where thread_key = ${threadKey}`
       }),
 
       recordSlackEvent: Effect.fn("ThreadStore.recordSlackEvent")(function*(message: SlackMessageProjectionInput) {
@@ -416,41 +463,41 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             team_id = excluded.team_id,
             channel_id = excluded.channel_id,
             channel_name = coalesce(excluded.channel_name, thread_cards.channel_name),
-            root_message_user_id = coalesce(thread_cards.root_message_user_id, excluded.root_message_user_id),
-            root_message_user_name = coalesce(thread_cards.root_message_user_name, excluded.root_message_user_name),
-            root_message_user_image_url = coalesce(thread_cards.root_message_user_image_url, excluded.root_message_user_image_url),
-            root_message_text = coalesce(thread_cards.root_message_text, excluded.root_message_text),
+            root_message_user_id = coalesce(excluded.root_message_user_id, thread_cards.root_message_user_id),
+            root_message_user_name = coalesce(excluded.root_message_user_name, thread_cards.root_message_user_name),
+            root_message_user_image_url = coalesce(excluded.root_message_user_image_url, thread_cards.root_message_user_image_url),
+            root_message_text = coalesce(excluded.root_message_text, thread_cards.root_message_text),
             status = case
               when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
               then 'new_message'
               else thread_cards.status
             end,
             last_message_at = case
-              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              when cast(excluded.last_message_at as real) >= cast(coalesce(thread_cards.last_message_at, '0') as real)
               then excluded.last_message_at
               else thread_cards.last_message_at
             end,
             last_message_user_id = case
-              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              when cast(excluded.last_message_at as real) >= cast(coalesce(thread_cards.last_message_at, '0') as real)
               then excluded.last_message_user_id
               else thread_cards.last_message_user_id
             end,
             last_message_user_name = case
-              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              when cast(excluded.last_message_at as real) >= cast(coalesce(thread_cards.last_message_at, '0') as real)
               then coalesce(excluded.last_message_user_name, thread_cards.last_message_user_name)
               when thread_cards.last_message_user_name is null
               then excluded.last_message_user_name
               else thread_cards.last_message_user_name
             end,
             last_message_user_image_url = case
-              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              when cast(excluded.last_message_at as real) >= cast(coalesce(thread_cards.last_message_at, '0') as real)
               then coalesce(excluded.last_message_user_image_url, thread_cards.last_message_user_image_url)
               when thread_cards.last_message_user_image_url is null
               then excluded.last_message_user_image_url
               else thread_cards.last_message_user_image_url
             end,
             last_message_text = case
-              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              when cast(excluded.last_message_at as real) >= cast(coalesce(thread_cards.last_message_at, '0') as real)
               then excluded.last_message_text
               else thread_cards.last_message_text
             end,
@@ -459,7 +506,7 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
               else coalesce(thread_cards.slack_permalink, excluded.slack_permalink)
             end,
             updated_at = case
-              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              when cast(excluded.last_message_at as real) >= cast(coalesce(thread_cards.last_message_at, '0') as real)
               then excluded.updated_at
               else thread_cards.updated_at
             end
@@ -470,18 +517,21 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             thread_key,
             message_ts,
             user_id,
+            parent_user_id,
             text,
             created_at
           ) values (
             ${threadKey},
             ${message.messageTs},
             ${message.userId},
+            ${message.parentUserId},
             ${message.text},
             ${message.eventTs}
           )
           on conflict(thread_key, message_ts) do update set
             text = excluded.text,
-            user_id = excluded.user_id
+            user_id = excluded.user_id,
+            parent_user_id = excluded.parent_user_id
         `
 
         yield* Effect.forEach(references, (reference) =>

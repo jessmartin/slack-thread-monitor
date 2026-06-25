@@ -10,7 +10,8 @@ The app listens to Slack Events API messages over Socket Mode, stores raw Slack 
 
 - Live Slack events arrive over Socket Mode; there is no continuous history polling loop.
 - Backfill is still available as an explicit action from `/settings`.
-- A card is created when the tracked Slack user authors a message, is mentioned, owns the parent/root message, or already has a card for that thread.
+- A card is created only for a real Slack thread with at least one threaded reply where the tracked Slack user authored the root message or one of the replies.
+- Top-level messages without replies, unrelated visible threads, and mentions alone are retained as raw events but do not create cards.
 - Any new message in a tracked thread moves the card back to `New Message`.
 - Cards can be moved to `Awaiting Reply` or `Resolved`.
 - Resolved cards can be archived to hide them from the board; archived cards return when a newer Slack message arrives.
@@ -65,6 +66,7 @@ It requests these user token scopes:
 - `im:read`
 - `mpim:history`
 - `mpim:read`
+- `usergroups:read`
 - `users:read`
 
 ## Local Setup
@@ -111,6 +113,26 @@ http://127.0.0.1:5173
 ```
 
 The API listens on `http://127.0.0.1:8787`; Vite proxies local API calls there.
+
+## Auto-start on macOS
+
+Install and start the local LaunchAgent:
+
+```bash
+./scripts/install-launch-agent.sh
+```
+
+This creates `~/Library/LaunchAgents/com.jessmartin.slack-thread-monitor.plist`, starts `npm run dev`, and restarts it on login after reboot.
+
+Useful commands:
+
+```bash
+launchctl print "gui/$(id -u)/com.jessmartin.slack-thread-monitor"
+launchctl bootout "gui/$(id -u)/com.jessmartin.slack-thread-monitor"
+./scripts/install-launch-agent.sh
+```
+
+Logs are written to `logs/launchd.out.log` and `logs/launchd.err.log`.
 
 ## Tracked User
 

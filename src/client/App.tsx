@@ -1,7 +1,7 @@
 import { Archive, CheckCircle2, Clock3, ExternalLink, Inbox, Settings as SettingsIcon } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
-import { buildSlackNativeMessageUrl, parseSlackText, readableSlackActorLabel, renderSlackPlainText } from "../shared/slack"
-import { cardStatuses, statusLabels, type AppMetaResponse, type BackfillResponse, type CardStatus, type CardsResponse, type SettingsResponse, type SlackWorkspace, type ThreadCard, type TrackedSlackUser } from "../shared/types"
+import { buildSlackNativeMessageUrl, extractSlackMentionIds, parseSlackText, readableSlackActorLabel, renderSlackPlainText, type SlackMentionLabels } from "../shared/slack"
+import { cardStatuses, statusLabels, type AppMetaResponse, type BackfillResponse, type CardStatus, type CardsResponse, type MentionLabelsResponse, type SettingsResponse, type SlackWorkspace, type ThreadCard, type TrackedSlackUser } from "../shared/types"
 
 const statusIcon = (status: CardStatus) => {
   if (status === "awaiting_reply") {
@@ -26,6 +26,23 @@ const loadMeta = async (): Promise<AppMetaResponse> => {
   const response = await fetch("/api/meta")
   if (!response.ok) {
     throw new Error("Failed to load app metadata")
+  }
+  return await response.json()
+}
+
+const loadMentionLabels = async (
+  userIds: ReadonlyArray<string>,
+  subteamIds: ReadonlyArray<string>
+): Promise<MentionLabelsResponse> => {
+  const response = await fetch("/api/mention-labels", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ userIds, subteamIds })
+  })
+  if (!response.ok) {
+    throw new Error("Failed to load mention labels")
   }
   return await response.json()
 }
@@ -146,8 +163,55 @@ const rootAuthorImageUrl = (card: ThreadCard): string | null =>
 const rootMessageText = (card: ThreadCard): string | null =>
   card.rootMessageText ?? card.lastMessageText
 
-const previewTitle = (text: string, maxLines: number, maxChars: number): string => {
-  const normalized = renderSlackPlainText(text)
+const addUnique = (
+  values: ReadonlyArray<string>,
+  value: string
+): ReadonlyArray<string> =>
+  values.includes(value) ? values : [...values, value]
+
+const collectMentionIds = (cards: ReadonlyArray<ThreadCard>) => {
+  let userIds: ReadonlyArray<string> = []
+  let subteamIds: ReadonlyArray<string> = []
+
+  for (const card of cards) {
+    for (const text of [card.rootMessageText, card.lastMessageText]) {
+      if (text === null) {
+        continue
+      }
+      const mentions = extractSlackMentionIds(text)
+      for (const userId of mentions.userIds) {
+        userIds = addUnique(userIds, userId)
+      }
+      for (const subteamId of mentions.subteamIds) {
+        subteamIds = addUnique(subteamIds, subteamId)
+      }
+    }
+  }
+
+  return {
+    userIds,
+    subteamIds
+  }
+}
+
+const markAttempted = (
+  current: Readonly<Record<string, true>>,
+  ids: ReadonlyArray<string>
+): Readonly<Record<string, true>> => {
+  const next: Record<string, true> = { ...current }
+  for (const id of ids) {
+    next[id] = true
+  }
+  return next
+}
+
+const previewTitle = (
+  text: string,
+  mentionLabels: SlackMentionLabels,
+  maxLines: number,
+  maxChars: number
+): string => {
+  const normalized = renderSlackPlainText(text, mentionLabels)
     .replace(/\r\n/g, "\n")
     .replace(/[ \t]+/g, " ")
     .trim()
@@ -199,11 +263,14 @@ const renderSlackInlineText = (text: string, keyPrefix: string): ReadonlyArray<R
   return cursor >= text.length ? nodes : [...nodes, text.slice(cursor)]
 }
 
-const renderSlackPreview = (text: string): ReadonlyArray<ReactNode> => {
+const renderSlackPreview = (
+  text: string,
+  mentionLabels: SlackMentionLabels
+): ReadonlyArray<ReactNode> => {
   let nodes: ReadonlyArray<ReactNode> = []
   let index = 0
 
-  for (const segment of parseSlackText(text)) {
+  for (const segment of parseSlackText(text, mentionLabels)) {
     const key = `slack-segment-${index}`
     if (segment.kind === "text") {
       nodes = [...nodes, ...renderSlackInlineText(segment.text, key)]
@@ -246,11 +313,12 @@ function ActorAvatar({ imageUrl, label }: ActorAvatarProps) {
 
 interface CardProps {
   readonly card: ThreadCard
+  readonly mentionLabels: SlackMentionLabels
   readonly onMove: (threadKey: string, status: CardStatus) => Promise<void>
   readonly onDragStart: (threadKey: string) => void
 }
 
-function ThreadCardView({ card, onMove, onDragStart }: CardProps) {
+function ThreadCardView({ card, mentionLabels, onMove, onDragStart }: CardProps) {
   const slackUrl = slackThreadUrl(card)
   const rootAuthor = rootAuthorLabel(card)
   const latestAuthor = latestAuthorLabel(card)
@@ -267,9 +335,9 @@ function ThreadCardView({ card, onMove, onDragStart }: CardProps) {
         <div className="root-message-meta">
           <div
             className="root-message-text"
-            title={originalText === null ? fallbackMessageText : previewTitle(originalText, 8, 900)}
+            title={originalText === null ? fallbackMessageText : previewTitle(originalText, mentionLabels, 8, 900)}
           >
-            {originalText === null ? fallbackMessageText : renderSlackPreview(originalText)}
+            {originalText === null ? fallbackMessageText : renderSlackPreview(originalText, mentionLabels)}
           </div>
           <div className="root-message-details">
             <span className="root-author-name">{rootAuthor}</span>
@@ -281,7 +349,7 @@ function ThreadCardView({ card, onMove, onDragStart }: CardProps) {
 
       {card.lastMessageText !== null && (
         <div className="latest-comment">
-          <p className="latest-comment-text">{renderSlackPreview(card.lastMessageText)}</p>
+          <p className="latest-comment-text">{renderSlackPreview(card.lastMessageText, mentionLabels)}</p>
           <div className="latest-comment-meta">
             <ActorAvatar imageUrl={card.lastMessageUserImageUrl} label={latestAuthor} />
             <span className="latest-comment-sender">{latestAuthor}</span>
@@ -351,13 +419,14 @@ interface ColumnProps {
   readonly status: CardStatus
   readonly cards: ReadonlyArray<ThreadCard>
   readonly draggedThreadKey: string | null
+  readonly mentionLabels: SlackMentionLabels
   readonly onDropCard: (status: CardStatus) => Promise<void>
   readonly onMove: (threadKey: string, status: CardStatus) => Promise<void>
   readonly onArchiveAll: () => Promise<void>
   readonly onDragStart: (threadKey: string) => void
 }
 
-function Column({ status, cards, draggedThreadKey, onArchiveAll, onDropCard, onMove, onDragStart }: ColumnProps) {
+function Column({ status, cards, draggedThreadKey, mentionLabels, onArchiveAll, onDropCard, onMove, onDragStart }: ColumnProps) {
   return (
     <section
       className={`board-column column-${status}`}
@@ -395,6 +464,7 @@ function Column({ status, cards, draggedThreadKey, onArchiveAll, onDropCard, onM
           <ThreadCardView
             card={card}
             key={card.threadKey}
+            mentionLabels={mentionLabels}
             onDragStart={onDragStart}
             onMove={onMove}
           />
@@ -552,6 +622,9 @@ export function App() {
   const [trackedUser, setTrackedUser] = useState<TrackedSlackUser | null>(null)
   const [path, setPath] = useState(window.location.pathname)
   const [blockingOperation, setBlockingOperation] = useState<string | null>(null)
+  const [mentionLabels, setMentionLabels] = useState<SlackMentionLabels>({ users: {}, subteams: {} })
+  const [attemptedUserMentionIds, setAttemptedUserMentionIds] = useState<Readonly<Record<string, true>>>({})
+  const [attemptedSubteamMentionIds, setAttemptedSubteamMentionIds] = useState<Readonly<Record<string, true>>>({})
 
   const refresh = useCallback(async () => {
     try {
@@ -576,6 +649,37 @@ export function App() {
       .then((meta) => setTrackedUser(meta.trackedUser))
       .catch(() => setTrackedUser(null))
   }, [])
+
+  useEffect(() => {
+    const mentions = collectMentionIds(cards)
+    const missingUserIds = mentions.userIds.filter((userId) =>
+      mentionLabels.users[userId] === undefined && attemptedUserMentionIds[userId] !== true
+    )
+    const missingSubteamIds = mentions.subteamIds.filter((subteamId) =>
+      mentionLabels.subteams[subteamId] === undefined && attemptedSubteamMentionIds[subteamId] !== true
+    )
+
+    if (missingUserIds.length === 0 && missingSubteamIds.length === 0) {
+      return
+    }
+
+    setAttemptedUserMentionIds((current) => markAttempted(current, missingUserIds))
+    setAttemptedSubteamMentionIds((current) => markAttempted(current, missingSubteamIds))
+    loadMentionLabels(missingUserIds, missingSubteamIds)
+      .then((labels) => {
+        setMentionLabels((current) => ({
+          users: {
+            ...current.users,
+            ...labels.users
+          },
+          subteams: {
+            ...current.subteams,
+            ...labels.subteams
+          }
+        }))
+      })
+      .catch(() => undefined)
+  }, [attemptedSubteamMentionIds, attemptedUserMentionIds, cards, mentionLabels])
 
   useEffect(() => {
     const onPopState = () => setPath(window.location.pathname)
@@ -676,6 +780,7 @@ export function App() {
                 cards={column.cards}
                 draggedThreadKey={draggedThreadKey}
                 key={column.status}
+                mentionLabels={mentionLabels}
                 onArchiveAll={archiveResolved}
                 onDragStart={setDraggedThreadKey}
                 onDropCard={dropCard}

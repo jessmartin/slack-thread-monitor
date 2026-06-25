@@ -3,7 +3,7 @@ import { Hono } from "hono"
 import { Effect, ManagedRuntime } from "effect"
 import { SqliteClient } from "@effect/sql-sqlite-node"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
-import type { CardStatus, SettingsResponse, SlackWorkspace, TrackedSlackUser } from "../shared/types"
+import type { CardStatus, MentionLabelsRequest, MentionLabelsResponse, SettingsResponse, SlackWorkspace, TrackedSlackUser } from "../shared/types"
 import { AppConfigService } from "./config"
 import { ReferenceEnricher } from "./metadata"
 import { backfillSlackThreads, SlackApiClient } from "./slack"
@@ -25,6 +25,14 @@ const getObjectField = (value: unknown, key: string): unknown => {
 const getStringField = (value: unknown, key: string): string | null => {
   const field = getObjectField(value, key)
   return typeof field === "string" ? field : null
+}
+
+const getStringArrayField = (value: unknown, key: string): ReadonlyArray<string> => {
+  const field = getObjectField(value, key)
+  if (!Array.isArray(field)) {
+    return []
+  }
+  return field.filter((item) => typeof item === "string")
 }
 
 const unknownSlackWorkspace = (): SlackWorkspace => ({
@@ -113,6 +121,25 @@ export const startHttpServer = (
       ThreadWorkflows.use((workflows) => workflows.listCards())
     )
     return context.json({ cards })
+  })
+
+  app.post("/api/mention-labels", async (context) => {
+    const body: unknown = await context.req.json().catch(() => null)
+    const request: MentionLabelsRequest = {
+      userIds: getStringArrayField(body, "userIds"),
+      subteamIds: getStringArrayField(body, "subteamIds")
+    }
+
+    const [users, subteams] = await Promise.all([
+      runtime.runPromise(SlackApiClient.use((slack) => slack.getUserMentionLabels(request.userIds))),
+      runtime.runPromise(SlackApiClient.use((slack) => slack.getSubteamMentionLabels(request.subteamIds)))
+    ])
+
+    const response: MentionLabelsResponse = {
+      users,
+      subteams
+    }
+    return context.json(response)
   })
 
   app.patch("/api/cards/:threadKey/status", async (context) => {

@@ -42,6 +42,10 @@ const boot = Effect.gen(function*() {
   yield* store.migrate()
   const slackUserId = yield* initialTrackedSlackUserId()
   yield* store.setSlackUserId(slackUserId)
+  const prunedCards = yield* store.pruneCardsOutsideTrackingRule(slackUserId)
+  if (prunedCards > 0) {
+    yield* Effect.sync(() => console.log(`Pruned ${prunedCards} Slack thread cards outside the tracking rule.`))
+  }
 })
 
 await runtime.runPromise(boot)

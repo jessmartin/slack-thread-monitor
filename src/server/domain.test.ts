@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest"
-import { buildSlackNativeMessageUrl, normalizeSlackMessageTs, readableSlackActorLabel } from "../shared/slack"
-import { buildExcerpt, extractReferences, parseCardStatus, shouldTrackMessage, type SlackMessageProjectionInput } from "./domain"
+import { buildSlackNativeMessageUrl, extractSlackMentionIds, normalizeSlackMessageTs, readableSlackActorLabel, renderSlackEmojiAliases, renderSlackPlainText } from "../shared/slack"
+import { buildExcerpt, extractReferences, parseCardStatus, shouldTrackThread, type SlackMessageProjectionInput } from "./domain"
 
 describe("domain", () => {
   const message = (overrides: Partial<SlackMessageProjectionInput>): SlackMessageProjectionInput => ({
@@ -62,6 +62,34 @@ describe("domain", () => {
     )
   })
 
+  it("renders Slack user and subteam mentions from labels with ID fallbacks", () => {
+    assert.strictEqual(
+      buildExcerpt("<@U0852CJ7Q2U> it has me half wanting to risk it all"),
+      "@U0852CJ7Q2U it has me half wanting to risk it all"
+    )
+    assert.strictEqual(renderSlackPlainText("<@U0852CJ7Q2U|Jess> please review"), "@Jess please review")
+    assert.strictEqual(
+      renderSlackPlainText("<@U0852CJ7Q2U> <!subteam^S07Q6QNBALX> please review", {
+        users: { U0852CJ7Q2U: "Baskerville" },
+        subteams: { S07Q6QNBALX: "eng" }
+      }),
+      "@Baskerville @eng please review"
+    )
+    assert.strictEqual(renderSlackPlainText("<!subteam^S07Q6QNBALX> please review"), "@S07Q6QNBALX please review")
+    assert.deepStrictEqual(extractSlackMentionIds("<@U0852CJ7Q2U> <!subteam^S07Q6QNBALX>"), {
+      userIds: ["U0852CJ7Q2U"],
+      subteamIds: ["S07Q6QNBALX"]
+    })
+  })
+
+  it("renders standard Slack emoji aliases and preserves unknown custom emoji aliases", () => {
+    assert.strictEqual(
+      renderSlackEmojiAliases("The line annotated the video for me? :exploding_head: :thumbsup: :custom-elicit:"),
+      "The line annotated the video for me? 🤯 👍 :custom-elicit:"
+    )
+    assert.strictEqual(buildExcerpt("Looks good :white_check_mark:"), "Looks good ✅")
+  })
+
   it("parses unknown statuses as new message", () => {
     assert.strictEqual(parseCardStatus("awaiting_reply"), "awaiting_reply")
     assert.strictEqual(parseCardStatus("resolved"), "resolved")
@@ -84,10 +112,29 @@ describe("domain", () => {
     )
   })
 
-  it("tracks threads rooted in my Slack messages", () => {
-    assert.strictEqual(shouldTrackMessage(message({ userId: "U1" }), false), true)
-    assert.strictEqual(shouldTrackMessage(message({ parentUserId: "U1" }), false), true)
-    assert.strictEqual(shouldTrackMessage(message({ text: "cc <@U1>" }), false), true)
-    assert.strictEqual(shouldTrackMessage(message({ userId: "U2", parentUserId: "U3" }), false), false)
+  it("tracks only real threads where my Slack user authored the root or a reply", () => {
+    assert.strictEqual(shouldTrackThread([
+      message({ userId: "U1" })
+    ]), false)
+
+    assert.strictEqual(shouldTrackThread([
+      message({ userId: "U1" }),
+      message({ eventId: "E2", eventTs: "2.0", messageTs: "2.0", rootThreadTs: "1.0", userId: "U2" })
+    ]), true)
+
+    assert.strictEqual(shouldTrackThread([
+      message({ userId: "U2" }),
+      message({ eventId: "E2", eventTs: "2.0", messageTs: "2.0", rootThreadTs: "1.0", userId: "U1" })
+    ]), true)
+
+    assert.strictEqual(shouldTrackThread([
+      message({ userId: "U2" }),
+      message({ eventId: "E2", eventTs: "2.0", messageTs: "2.0", rootThreadTs: "1.0", userId: "U3" })
+    ]), false)
+
+    assert.strictEqual(shouldTrackThread([
+      message({ userId: "U2", text: "cc <@U1>" }),
+      message({ eventId: "E2", eventTs: "2.0", messageTs: "2.0", rootThreadTs: "1.0", userId: "U3" })
+    ]), false)
   })
 })

@@ -1,7 +1,7 @@
 import { Context, Effect, Layer } from "effect"
 import type { CardStatus } from "../shared/types"
 import { AppConfigService } from "./config"
-import { buildThreadKey, extractReferences, shouldTrackMessage, type SlackMessageProjectionInput } from "./domain"
+import { buildThreadKey, extractReferences, shouldTrackThread, type SlackMessageProjectionInput } from "./domain"
 import { ConfigError } from "./errors"
 import { ReferenceEnricher } from "./metadata"
 import { ThreadStore, type ManualStatusInput } from "./store"
@@ -19,6 +19,50 @@ const getConfiguredTrackedSlackUserId = Effect.fn("ThreadWorkflows.getConfigured
   return slackUserId
 })
 
+const ingestSlackThread = Effect.fn("ThreadWorkflows.ingestSlackThread")(function*(
+  messages: ReadonlyArray<SlackMessageProjectionInput>
+) {
+  const store = yield* ThreadStore
+  const enricher = yield* ReferenceEnricher
+  const config = yield* AppConfigService
+  const mySlackUserId = yield* getConfiguredTrackedSlackUserId()
+  const messagesForTracking = messages.map((message) => ({
+    ...message,
+    mySlackUserId
+  }))
+
+  yield* Effect.forEach(messagesForTracking, (message) => store.recordSlackEvent(message), { discard: true })
+
+  if (!shouldTrackThread(messagesForTracking)) {
+    return null
+  }
+
+  let updatedThreadKey: string | null = null
+  const sortedMessages = messagesForTracking.toSorted((left, right) => left.messageTs.localeCompare(right.messageTs))
+  const firstMessage = sortedMessages[0]
+  if (firstMessage === undefined) {
+    return null
+  }
+
+  yield* store.clearReferencesForThread(buildThreadKey(firstMessage.teamId, firstMessage.channelId, firstMessage.rootThreadTs))
+  yield* Effect.forEach(
+    sortedMessages,
+    (message) =>
+      Effect.gen(function*() {
+        const references = extractReferences(message.text, {
+          linearWorkspaceUrl: config.linearWorkspaceUrl
+        })
+        updatedThreadKey = yield* store.upsertMessageProjection(message, references)
+      }),
+    { discard: true }
+  )
+
+  if (updatedThreadKey !== null) {
+    yield* enricher.enrichThread(updatedThreadKey)
+  }
+  return updatedThreadKey
+})
+
 export class ThreadWorkflows extends Context.Service<ThreadWorkflows>()(
   "ThreadWorkflows",
   {
@@ -28,30 +72,9 @@ export class ThreadWorkflows extends Context.Service<ThreadWorkflows>()(
       }),
 
       ingestSlackMessage: Effect.fn("ThreadWorkflows.ingestSlackMessage")(function*(message: SlackMessageProjectionInput) {
-        const store = yield* ThreadStore
-        const enricher = yield* ReferenceEnricher
-        const config = yield* AppConfigService
-        const mySlackUserId = yield* getConfiguredTrackedSlackUserId()
-        const messageForTracking = {
-          ...message,
-          mySlackUserId
-        }
-        const threadKey = buildThreadKey(message.teamId, message.channelId, message.rootThreadTs)
-
-        yield* store.recordSlackEvent(messageForTracking)
-
-        const exists = yield* store.cardExists(threadKey)
-        if (!shouldTrackMessage(messageForTracking, exists)) {
-          return null
-        }
-
-        const references = extractReferences(message.text, {
-          linearWorkspaceUrl: config.linearWorkspaceUrl
-        })
-        const updatedThreadKey = yield* store.upsertMessageProjection(messageForTracking, references)
-        yield* enricher.enrichThread(updatedThreadKey)
-        return updatedThreadKey
+        return yield* ingestSlackThread([message])
       }),
+      ingestSlackThread,
 
       setThreadStatus: Effect.fn("ThreadWorkflows.setThreadStatus")(function*(input: ManualStatusInput) {
         const store = yield* ThreadStore
