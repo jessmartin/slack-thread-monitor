@@ -1,0 +1,40 @@
+{
+  "name": "slack-thread-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "./scripts/prepare-effect.sh",
+    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/server/main.ts",
+    "dev:web": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform-node": "^4.0.0-beta.88",
+    "@effect/sql-sqlite-node": "^4.0.0-beta.88",
+    "@hono/node-server": "^2.0.6",
+    "@slack/bolt": "^4.7.3",
+    "dotenv": "^17.4.2",
+    "effect": "^4.0.0-beta.88",
+    "hono": "^4.12.27",
+    "lucide-react": "^1.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@effect/vitest": "^4.0.0-beta.88",
+    "@types/node": "^26.0.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "concurrently": "^10.0.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.0",
+    "vitest": "^4.1.9"
+  }
+}
