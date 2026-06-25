@@ -79,10 +79,6 @@ export interface SettingsResponse {
   readonly workspace: SlackWorkspace
 }
 
-export interface SettingsUpdateRequest {
-  readonly slackUserId?: string
-}
-
 export interface BackfillRequest {
   readonly days: number
 }

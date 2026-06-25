@@ -7,13 +7,12 @@ import { ReferenceEnricher } from "./metadata"
 import { ThreadStore, type ManualStatusInput } from "./store"
 
 const getConfiguredTrackedSlackUserId = Effect.fn("ThreadWorkflows.getConfiguredTrackedSlackUserId")(function*() {
-  const config = yield* AppConfigService
   const store = yield* ThreadStore
-  const slackUserId = yield* store.getSlackUserId(config.mySlackUserId)
+  const slackUserId = yield* store.getSlackUserId()
   if (slackUserId === null) {
     return yield* Effect.fail(
       ConfigError.make({
-        message: "Tracked Slack user is not configured. Set SLACK_USER_TOKEN or MY_SLACK_USER_ID."
+        message: "Tracked Slack user is not configured. Set SLACK_USER_TOKEN and restart the app."
       })
     )
   }
@@ -26,12 +25,6 @@ export class ThreadWorkflows extends Context.Service<ThreadWorkflows>()(
     make: Effect.succeed({
       getTrackedSlackUserId: Effect.fn("ThreadWorkflows.getTrackedSlackUserId")(function*() {
         return yield* getConfiguredTrackedSlackUserId()
-      }),
-
-      setTrackedSlackUserId: Effect.fn("ThreadWorkflows.setTrackedSlackUserId")(function*(slackUserId: string) {
-        const store = yield* ThreadStore
-        yield* store.setSlackUserId(slackUserId)
-        return slackUserId
       }),
 
       ingestSlackMessage: Effect.fn("ThreadWorkflows.ingestSlackMessage")(function*(message: SlackMessageProjectionInput) {

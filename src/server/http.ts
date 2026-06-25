@@ -108,22 +108,6 @@ export const startHttpServer = (
     context.json(await settingsResponse())
   )
 
-  app.patch("/api/settings", async (context) => {
-    const body: unknown = await context.req.json().catch(() => null)
-    const slackUserId = getStringField(body, "slackUserId")
-    if (slackUserId !== null) {
-      if (slackUserId.trim() === "") {
-        return context.json({ error: "slackUserId cannot be blank" }, 400)
-      }
-
-      await runtime.runPromise(
-        ThreadWorkflows.use((workflows) => workflows.setTrackedSlackUserId(slackUserId.trim()))
-      )
-    }
-
-    return context.json(await settingsResponse())
-  })
-
   app.get("/api/cards", async (context) => {
     const cards = await runtime.runPromise(
       ThreadWorkflows.use((workflows) => workflows.listCards())

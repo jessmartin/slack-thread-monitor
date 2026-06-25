@@ -1,7 +1,7 @@
 import { Archive, CheckCircle2, Clock3, ExternalLink, Inbox, Settings as SettingsIcon } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { buildSlackNativeMessageUrl, parseSlackText, readableSlackActorLabel, renderSlackPlainText } from "../shared/slack"
-import { cardStatuses, statusLabels, type AppMetaResponse, type BackfillResponse, type CardStatus, type CardsResponse, type SettingsResponse, type SettingsUpdateRequest, type SlackWorkspace, type ThreadCard, type TrackedSlackUser } from "../shared/types"
+import { cardStatuses, statusLabels, type AppMetaResponse, type BackfillResponse, type CardStatus, type CardsResponse, type SettingsResponse, type SlackWorkspace, type ThreadCard, type TrackedSlackUser } from "../shared/types"
 
 const statusIcon = (status: CardStatus) => {
   if (status === "awaiting_reply") {
@@ -34,20 +34,6 @@ const loadSettings = async (): Promise<SettingsResponse> => {
   const response = await fetch("/api/settings")
   if (!response.ok) {
     throw new Error("Failed to load settings")
-  }
-  return await response.json()
-}
-
-const saveSettings = async (settings: SettingsUpdateRequest): Promise<SettingsResponse> => {
-  const response = await fetch("/api/settings", {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(settings)
-  })
-  if (!response.ok) {
-    throw new Error("Failed to save settings")
   }
   return await response.json()
 }
@@ -337,6 +323,12 @@ function ThreadCardView({ card, onMove, onDragStart }: CardProps) {
               Resolved
             </button>
           )}
+          {card.status === "resolved" && (
+            <button type="button" className="icon-button" onClick={() => onMove(card.threadKey, "archived")}>
+              <Archive size={15} />
+              Archive
+            </button>
+          )}
         </div>
         {slackUrl !== null && (
           <a
@@ -438,11 +430,12 @@ function UserChip({ large = false, user }: UserChipProps) {
 }
 
 interface SettingsViewProps {
+  readonly onBlockingOperationChange: (message: string | null) => void
   readonly onTrackedUserChanged: (user: TrackedSlackUser) => void
 }
 
-function SettingsView({ onTrackedUserChanged }: SettingsViewProps) {
-  const [slackUserId, setSlackUserId] = useState("")
+function SettingsView({ onBlockingOperationChange, onTrackedUserChanged }: SettingsViewProps) {
+  const [trackedUser, setTrackedUser] = useState<TrackedSlackUser | null>(null)
   const [workspace, setWorkspace] = useState<SlackWorkspace | null>(null)
   const [days, setDays] = useState("14")
   const [busy, setBusy] = useState(false)
@@ -452,32 +445,17 @@ function SettingsView({ onTrackedUserChanged }: SettingsViewProps) {
   useEffect(() => {
     loadSettings()
       .then((settings) => {
-        setSlackUserId(settings.slackUserId)
+        setTrackedUser(settings.trackedUser)
         setWorkspace(settings.workspace)
         onTrackedUserChanged(settings.trackedUser)
       })
       .catch((cause) => setError(cause instanceof Error ? cause.message : "Failed to load settings"))
   }, [onTrackedUserChanged])
 
-  const saveSlackUser = async () => {
-    setBusy(true)
-    try {
-      const settings = await saveSettings({ slackUserId })
-      setSlackUserId(settings.slackUserId)
-      setWorkspace(settings.workspace)
-      onTrackedUserChanged(settings.trackedUser)
-      setMessage("Saved.")
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to save settings")
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const backfill = async () => {
     const parsedDays = Number.parseFloat(days)
     setBusy(true)
+    onBlockingOperationChange("Backfill running...")
     try {
       const result = await runBackfill(parsedDays)
       setMessage(`Backfill complete: ${result.threadsCreated} new threads, ${result.threadsScanned} scanned.`)
@@ -486,6 +464,7 @@ function SettingsView({ onTrackedUserChanged }: SettingsViewProps) {
       setError(cause instanceof Error ? cause.message : "Backfill failed")
     } finally {
       setBusy(false)
+      onBlockingOperationChange(null)
     }
   }
 
@@ -524,22 +503,19 @@ function SettingsView({ onTrackedUserChanged }: SettingsViewProps) {
       </div>
 
       <div className="settings-group">
-        <label htmlFor="slack-user-id">Slack user ID</label>
-        <div className="settings-row">
-          <input
-            id="slack-user-id"
-            onChange={(event) => setSlackUserId(event.target.value)}
-            spellCheck={false}
-            type="text"
-            value={slackUserId}
-          />
-          <button disabled={busy} onClick={() => void saveSlackUser()} type="button">
-            Save
-          </button>
+        <div className="settings-label">Tracked Slack user</div>
+        <div className="settings-readonly-value">
+          {trackedUser === null ? (
+            <span>Unknown user</span>
+          ) : (
+            <div className="settings-user-value">
+              <UserChip user={trackedUser} />
+              <span>{trackedUser.id}</span>
+            </div>
+          )}
         </div>
         <p className="settings-note">
-          Changing this switches which Slack user the board watches for new activity. Existing cards stay where they
-          are; run Backfill after saving to add recent threads for the new user, or Clear DB to start over.
+          The board follows the Slack user who authorized SLACK_USER_TOKEN.
         </p>
       </div>
 
@@ -575,6 +551,7 @@ export function App() {
   const [draggedThreadKey, setDraggedThreadKey] = useState<string | null>(null)
   const [trackedUser, setTrackedUser] = useState<TrackedSlackUser | null>(null)
   const [path, setPath] = useState(window.location.pathname)
+  const [blockingOperation, setBlockingOperation] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -635,14 +612,17 @@ export function App() {
   }, [draggedThreadKey, moveCard])
 
   const navigate = useCallback((nextPath: string) => {
+    if (blockingOperation !== null) {
+      return
+    }
     window.history.pushState(null, "", nextPath)
     setPath(nextPath)
-  }, [])
+  }, [blockingOperation])
 
   const isSettings = path === "/settings"
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" aria-busy={blockingOperation !== null}>
       <header className="app-header">
         <div className="header-title">
           {isSettings ? <h1>Settings</h1> : <UserChip large user={trackedUser} />}
@@ -675,8 +655,18 @@ export function App() {
         </div>
       </header>
 
+      {blockingOperation !== null && (
+        <div className="app-lock-overlay" role="status" aria-live="polite">
+          <div className="app-lock-panel">
+            <span className="app-lock-spinner" aria-hidden="true" />
+            <strong>{blockingOperation}</strong>
+            <span>The board will unlock when it finishes.</span>
+          </div>
+        </div>
+      )}
+
       {isSettings ? (
-        <SettingsView onTrackedUserChanged={setTrackedUser} />
+        <SettingsView onBlockingOperationChange={setBlockingOperation} onTrackedUserChanged={setTrackedUser} />
       ) : (
         <>
           {error !== null && <div className="error-banner">{error}</div>}

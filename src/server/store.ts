@@ -268,12 +268,12 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
         `
       }),
 
-      getSlackUserId: Effect.fn("ThreadStore.getSlackUserId")(function*(fallback: string | null) {
+      getSlackUserId: Effect.fn("ThreadStore.getSlackUserId")(function*() {
         const sql = yield* SqlClient.SqlClient
         const rows = yield* sql<{ readonly value: string }>`
           select value from app_settings where key = ${slackUserIdSettingKey} limit 1
         `
-        return rows[0]?.value ?? fallback
+        return rows[0]?.value ?? null
       }),
 
       setSlackUserId: Effect.fn("ThreadStore.setSlackUserId")(function*(slackUserId: string) {

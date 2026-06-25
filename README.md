@@ -4,6 +4,8 @@ A local Kanban board for Slack threads that need attention.
 
 The app listens to Slack Events API messages over Socket Mode, stores raw Slack event payloads plus projected cards in SQLite, and renders a three-column board in your local browser.
 
+![Slack Thread Monitor board](docs/slack-thread-monitor.png)
+
 ## Behavior
 
 - Live Slack events arrive over Socket Mode; there is no continuous history polling loop.
@@ -91,7 +93,6 @@ PORT=8787
 These are optional:
 
 ```bash
-MY_SLACK_USER_ID=U1234567890
 LINEAR_API_KEY=
 LINEAR_WORKSPACE_URL=
 GITHUB_TOKEN=
@@ -111,20 +112,13 @@ http://127.0.0.1:5173
 
 The API listens on `http://127.0.0.1:8787`; Vite proxies local API calls there.
 
-## Choosing The Tracked User
+## Tracked User
 
-By default, the app tracks the Slack user who authorized `SLACK_USER_TOKEN`. On first run, it calls Slack `auth.test`, stores that `user_id` locally, and uses it as the tracked user. No Slack user ID is required for normal setup.
+The app tracks the Slack user who authorized `SLACK_USER_TOKEN`. On startup, it calls Slack `auth.test` and uses that `user_id` as the tracked user.
 
-Because there are multiple Jess Martin accounts, verify the member ID carefully in Slack:
+`/settings` shows the tracked Slack user and connected workspace as read-only values. The tracked user cannot be changed from the UI.
 
-1. Open the person profile.
-2. Use the overflow menu.
-3. Choose **Copy member ID**.
-4. Paste that value into `/settings`.
-
-Changing the tracked user in `/settings` affects future live events and future backfills. Existing cards stay in the local database until you move them or clear the DB.
-
-Set `MY_SLACK_USER_ID=U1234567890` only when you want first run to track a different Slack account than the one that authorized `SLACK_USER_TOKEN`.
+To track a different Slack account, authorize the Slack app as that account, replace `SLACK_USER_TOKEN`, restart the app, and run Backfill again.
 
 ## Backfill
 
@@ -132,7 +126,7 @@ Backfill is not polling. It is a manual scan for existing threads.
 
 Use `/settings` to run a backfill for any number of days. The app scans conversations readable by the user token, fetches replies for candidate threads, creates missing cards when the tracked user is involved, and refreshes cards it already knows about.
 
-Run backfill after first install, after changing the tracked user, or after clearing the database.
+Run backfill after first install, after changing the authorized Slack user token, or after clearing the database.
 
 ## Optional Integrations
 

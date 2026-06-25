@@ -178,6 +178,54 @@ button {
   padding: 10px 12px;
 }
 
+.app-lock-overlay {
+  align-items: center;
+  background: rgba(238, 242, 244, 0.78);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 20;
+}
+
+.app-lock-panel {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #c8d1d8;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  color: #25313b;
+  display: flex;
+  gap: 10px;
+  min-height: 48px;
+  padding: 12px 14px;
+}
+
+.app-lock-panel strong {
+  font-size: 13px;
+}
+
+.app-lock-panel span:last-child {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.app-lock-spinner {
+  animation: app-lock-spin 900ms linear infinite;
+  border: 2px solid #c8d1d8;
+  border-radius: 999px;
+  border-top-color: #22577a;
+  height: 18px;
+  width: 18px;
+}
+
+@keyframes app-lock-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .settings-panel {
   flex: 1 1 auto;
   margin: 0 auto;
@@ -234,6 +282,19 @@ button {
 
 .settings-readonly-value a:hover {
   text-decoration: underline;
+}
+
+.settings-user-value {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.settings-user-value > span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .settings-row button,
