@@ -21,18 +21,6 @@ export class ThreadWorkflows extends Context.Service<ThreadWorkflows>()(
         return slackUserId
       }),
 
-      getSlackPublicPollSeconds: Effect.fn("ThreadWorkflows.getSlackPublicPollSeconds")(function*() {
-        const config = yield* AppConfigService
-        const store = yield* ThreadStore
-        return yield* store.getSlackPublicPollSeconds(config.slackPublicPollSeconds)
-      }),
-
-      setSlackPublicPollSeconds: Effect.fn("ThreadWorkflows.setSlackPublicPollSeconds")(function*(seconds: number) {
-        const store = yield* ThreadStore
-        yield* store.setSlackPublicPollSeconds(seconds)
-        return Math.max(0, Math.floor(seconds))
-      }),
-
       ingestSlackMessage: Effect.fn("ThreadWorkflows.ingestSlackMessage")(function*(message: SlackMessageProjectionInput) {
         const config = yield* AppConfigService
         const store = yield* ThreadStore

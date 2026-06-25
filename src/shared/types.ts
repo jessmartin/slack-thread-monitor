@@ -67,14 +67,12 @@ export interface AppMetaResponse {
 
 export interface SettingsResponse {
   readonly slackUserId: string
-  readonly slackPublicPollSeconds: number
   readonly trackedUser: TrackedSlackUser
   readonly workspace: SlackWorkspace
 }
 
 export interface SettingsUpdateRequest {
   readonly slackUserId?: string
-  readonly slackPublicPollSeconds?: number
 }
 
 export interface BackfillRequest {

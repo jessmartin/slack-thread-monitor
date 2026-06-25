@@ -1,37 +1,61 @@
 # Slack Thread Monitor
 
-A local Kanban board for the Slack threads you need to process, wait on, or close out.
+A local Kanban board for Slack threads that need attention.
 
-Slack Thread Monitor polls Slack as your Slack user, stores raw events and projected cards in SQLite, and renders a small React board in your local browser. It is built for one person: your Slack activity, your local database, your local machine.
+The app listens to Slack Events API messages over Socket Mode, stores raw Slack event payloads plus projected cards in SQLite, and renders a three-column board in your local browser.
 
-## What It Does
+## Behavior
 
-- Polls recent Slack history with a user OAuth token.
-- Reads public channels as the authorized user, including public channels the app is not a member of.
-- Reads private channels, DMs, and group DMs that the authorized user can access.
-- Creates a card when the configured Slack user participates in a thread, is mentioned, authored the parent message, or already has a tracked card.
-- Keeps each thread in one of three states: `New Message`, `Awaiting Reply`, or `Resolved`.
-- Lets you drag cards between columns.
-- Extracts Slack links, Linear issue IDs, Linear URLs, GitHub issues, and GitHub pull requests.
-- Optionally enriches Linear and GitHub references when API credentials are provided.
-- Stores everything locally in SQLite so the data is inspectable and private to your machine.
+- Live Slack events arrive over Socket Mode; there is no continuous history polling loop.
+- Backfill is still available as an explicit action from `/settings`.
+- A card is created when the tracked Slack user authors a message, is mentioned, owns the parent/root message, or already has a card for that thread.
+- Any new message in a tracked thread moves the card back to `New Message`.
+- Cards can be moved to `Awaiting Reply` or `Resolved`.
+- Slack links use the native `slack://channel?...` URL so the Mac app opens by default.
+- Linear issue IDs/URLs and GitHub issue/PR references are extracted and deduplicated.
+- Optional Linear and GitHub tokens enrich references with title/state metadata.
 
 ## Architecture
 
-- `src/server/main.ts` boots the local HTTP API, SQLite store, and Slack polling loop.
-- `src/server/slack.ts` scans Slack history and normalizes messages.
-- `src/server/workflows.ts` contains the tracking and status workflows.
+- `src/server/main.ts` boots SQLite, the local HTTP API, and the Slack Socket Mode listener.
+- `src/server/slack.ts` owns Slack Web API calls, Socket Mode event normalization, and one-shot backfill.
+- `src/server/workflows.ts` contains thread tracking and status workflows.
 - `src/server/store.ts` owns migrations and SQLite persistence.
 - `src/client/App.tsx` renders the board and settings UI.
-- `slack-app-manifest.yml` describes the minimal OAuth app used to issue a user token.
+- `slack-app-manifest.yml` defines the Slack app scopes and user event subscriptions.
 
-## Prerequisites
+## Install For Elicit Internal
 
-- Node.js 22+ and npm.
-- A Slack workspace where you can create or request installation of a private OAuth app.
-- A Slack user ID for the person whose threads should be tracked.
-- A Slack user token with the read scopes listed below.
-- Optional: Linear and GitHub API tokens for richer issue metadata.
+Create a Slack app in the **Elicit Internal** workspace:
+
+1. Open [api.slack.com/apps](https://api.slack.com/apps).
+2. Choose **Create New App**.
+3. Choose **From an app manifest**.
+4. Select the **Elicit Internal** workspace.
+5. Paste `slack-app-manifest.yml`.
+6. Create the app.
+7. On **Basic Information**, create an app-level token with `connections:write`. Copy the `xapp-...` token into `SLACK_APP_TOKEN`.
+8. On **OAuth & Permissions**, install the app to the workspace. Copy the **User OAuth Token** into `SLACK_USER_TOKEN`.
+9. Reinstall the app after any manifest or scope changes.
+
+The manifest subscribes to these user events:
+
+- `message.channels`
+- `message.groups`
+- `message.im`
+- `message.mpim`
+
+It requests these user token scopes:
+
+- `channels:history`
+- `channels:read`
+- `groups:history`
+- `groups:read`
+- `im:history`
+- `im:read`
+- `mpim:history`
+- `mpim:read`
+- `users:read`
 
 ## Local Setup
 
@@ -50,6 +74,7 @@ cp .env.example .env
 Fill in `.env`:
 
 ```bash
+SLACK_APP_TOKEN=xapp-your-app-level-token
 SLACK_USER_TOKEN=xoxp-your-user-token
 MY_SLACK_USER_ID=U1234567890
 DATABASE_FILE=./slack-thread-monitor.sqlite
@@ -65,108 +90,63 @@ Start the app:
 npm run dev
 ```
 
-Open the board:
+Open:
 
 ```text
 http://127.0.0.1:5173
 ```
 
-The API listens on `http://127.0.0.1:8787` by default. The Vite dev server proxies API calls to that port.
+The API listens on `http://127.0.0.1:8787`; Vite proxies local API calls there.
 
-## Slack Token Setup
+## Choosing The Tracked User
 
-The runtime does not need Socket Mode, event subscriptions, a bot user, slash commands, or message shortcuts. It only needs a user OAuth token.
+`MY_SLACK_USER_ID` is the fallback user ID used at boot. The Settings page can change the tracked user later.
 
-The checked-in `slack-app-manifest.yml` configures a minimal private Slack app with these **User Token Scopes**:
+Because there are multiple Jess Martin accounts, verify the member ID carefully in Slack:
 
-- `channels:history`
-- `channels:read`
-- `groups:history`
-- `groups:read`
-- `im:history`
-- `im:read`
-- `mpim:history`
-- `mpim:read`
-- `users:read`
+1. Open the person profile.
+2. Use the overflow menu.
+3. Choose **Copy member ID**.
+4. Paste that value into `/settings`.
 
-To create the token:
+Changing the tracked user affects future live events and future backfills. Existing cards stay in the local database until you move them or clear the DB.
 
-1. Go to [api.slack.com/apps](https://api.slack.com/apps).
-2. Choose **Create New App**.
-3. Choose **From an app manifest**.
-4. Pick your workspace.
-5. Paste the contents of `slack-app-manifest.yml`.
-6. Create and install the app.
-7. On **OAuth & Permissions**, copy the **User OAuth Token** that starts with `xoxp-`.
-8. Put that value in `SLACK_USER_TOKEN`.
+## Backfill
 
-Reinstall the app whenever you change user scopes.
+Backfill is not polling. It is a manual scan for existing threads.
 
-## Finding `MY_SLACK_USER_ID`
+Use `/settings` to run a backfill for any number of days. The app scans conversations readable by the user token, fetches replies for candidate threads, creates missing cards when the tracked user is involved, and refreshes cards it already knows about.
 
-In Slack, open your profile, use the overflow menu, and copy your member ID. It should look like `U1234567890`.
-
-This value is required at boot. The settings page can update the tracked user later, but the server needs an initial fallback value so it can start and migrate the database.
-
-## Backfilling Existing Threads
-
-The settings page includes a **Backfill** control. It scans recent Slack history, finds threads involving the tracked Slack user, and creates cards for matching threads.
-
-With `SLACK_USER_TOKEN`, public channels do not require the app to be a channel member. Private channels, DMs, and group DMs are limited to what the authorized user can access.
+Run backfill after first install, after changing the tracked user, or after clearing the database.
 
 ## Optional Integrations
 
-### Linear
-
-Set these when you want Linear issue links and metadata:
+Set these for Linear metadata:
 
 ```bash
 LINEAR_WORKSPACE_URL=https://linear.app/your-workspace
 LINEAR_API_KEY=lin_api_...
 ```
 
-`LINEAR_WORKSPACE_URL` is used to turn bare issue IDs such as `ABC-123` into links. `LINEAR_API_KEY` is used to fetch issue title, URL, and state.
-
-### GitHub
-
-Set this when you want authenticated GitHub metadata lookups:
+Set this for authenticated GitHub metadata:
 
 ```bash
 GITHUB_TOKEN=github_pat_...
 ```
 
-Without a token, the app still detects GitHub issue and pull request URLs, but authenticated requests are more reliable for private repositories and rate limits.
-
-## Useful Commands
+## Commands
 
 ```bash
-npm run dev        # Start API, polling loop, and Vite UI
+npm run dev        # Start API, Socket Mode listener, and Vite UI
 npm run build      # Typecheck and build the web app
 npm run typecheck  # Run TypeScript without emitting files
 npm test           # Run Vitest
 ```
 
-## Data And Security
+## Notes
 
 - `.env` is ignored and should never be committed.
 - `*.sqlite`, `*.sqlite-shm`, and `*.sqlite-wal` files are ignored.
 - Slack tokens should be treated like passwords.
-- The app is designed for local use. It does not include multi-user auth, hosting, billing, or marketplace distribution.
-
-## Troubleshooting
-
-**`MY_SLACK_USER_ID is required`**
-
-Add `MY_SLACK_USER_ID` to `.env`.
-
-**Slack sync fails because a token is missing**
-
-Set `SLACK_USER_TOKEN` in `.env`.
-
-**Backfill finds nothing**
-
-Confirm `SLACK_USER_TOKEN` belongs to the expected workspace and that the tracked Slack user ID is correct on the settings page.
-
-**Port conflict**
-
-Change `PORT` in `.env` for the API. Vite defaults to `5173`; if that port is busy, Vite will print the alternate URL.
+- Private channels and DMs are limited to what the authorized Slack user can access.
+- If live events do not appear after install, confirm `SLACK_APP_TOKEN`, Socket Mode, user event subscriptions, and the installed workspace.

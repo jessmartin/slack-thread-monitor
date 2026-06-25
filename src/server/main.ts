@@ -4,7 +4,7 @@ import { Effect, Layer, ManagedRuntime } from "effect"
 import { AppConfigService, readConfig } from "./config"
 import { ReferenceEnricher } from "./metadata"
 import { startHttpServer } from "./http"
-import { startSlackPublicChannelPoller } from "./slack"
+import { SlackApiClient, startSlackEventListener } from "./slack"
 import { ThreadStore } from "./store"
 import { ThreadWorkflows } from "./workflows"
 
@@ -17,6 +17,7 @@ const AppLayer = Layer.mergeAll(
   }),
   ThreadStore.layer,
   ReferenceEnricher.layer,
+  SlackApiClient.layer,
   ThreadWorkflows.layer
 )
 
@@ -26,17 +27,16 @@ const boot = Effect.gen(function*() {
   const store = yield* ThreadStore
   yield* store.migrate()
   yield* store.ensureSlackUserId(config.mySlackUserId)
-  yield* store.ensureSlackPublicPollSeconds(config.slackPublicPollSeconds)
 })
 
 await runtime.runPromise(boot)
 
 const server = startHttpServer(config.port, runtime)
-const stopSlackPoller = startSlackPublicChannelPoller(config, runtime)
+const stopSlackEvents = startSlackEventListener(config, runtime)
 
 const shutdown = async () => {
   console.log("Shutting down Slack Thread Monitor.")
-  stopSlackPoller()
+  stopSlackEvents()
   server.close()
   await runtime.dispose()
 }

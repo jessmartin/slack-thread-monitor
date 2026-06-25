@@ -51,7 +51,6 @@ export interface ReferenceMetadataInput {
 }
 
 const slackUserIdSettingKey = "slack_user_id"
-const slackPublicPollSecondsSettingKey = "slack_public_poll_seconds"
 
 const nowIso = Effect.sync(() => new Date().toISOString())
 
@@ -237,38 +236,12 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
         `
       }),
 
-      ensureSlackPublicPollSeconds: Effect.fn("ThreadStore.ensureSlackPublicPollSeconds")(function*(seconds: number) {
-        const sql = yield* SqlClient.SqlClient
-        const now = yield* nowIso
-        yield* sql`
-          insert into app_settings (
-            key,
-            value,
-            updated_at
-          ) values (
-            ${slackPublicPollSecondsSettingKey},
-            ${String(Math.max(0, Math.floor(seconds)))},
-            ${now}
-          )
-          on conflict(key) do nothing
-        `
-      }),
-
       getSlackUserId: Effect.fn("ThreadStore.getSlackUserId")(function*(fallback: string) {
         const sql = yield* SqlClient.SqlClient
         const rows = yield* sql<{ readonly value: string }>`
           select value from app_settings where key = ${slackUserIdSettingKey} limit 1
         `
         return rows[0]?.value ?? fallback
-      }),
-
-      getSlackPublicPollSeconds: Effect.fn("ThreadStore.getSlackPublicPollSeconds")(function*(fallback: number) {
-        const sql = yield* SqlClient.SqlClient
-        const rows = yield* sql<{ readonly value: string }>`
-          select value from app_settings where key = ${slackPublicPollSecondsSettingKey} limit 1
-        `
-        const parsed = Number.parseInt(rows[0]?.value ?? "", 10)
-        return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
       }),
 
       setSlackUserId: Effect.fn("ThreadStore.setSlackUserId")(function*(slackUserId: string) {
@@ -282,25 +255,6 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
           ) values (
             ${slackUserIdSettingKey},
             ${slackUserId},
-            ${now}
-          )
-          on conflict(key) do update set
-            value = excluded.value,
-            updated_at = excluded.updated_at
-        `
-      }),
-
-      setSlackPublicPollSeconds: Effect.fn("ThreadStore.setSlackPublicPollSeconds")(function*(seconds: number) {
-        const sql = yield* SqlClient.SqlClient
-        const now = yield* nowIso
-        yield* sql`
-          insert into app_settings (
-            key,
-            value,
-            updated_at
-          ) values (
-            ${slackPublicPollSecondsSettingKey},
-            ${String(Math.max(0, Math.floor(seconds)))},
             ${now}
           )
           on conflict(key) do update set

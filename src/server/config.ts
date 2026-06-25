@@ -4,9 +4,8 @@ import { ConfigError } from "./errors"
 export interface AppConfig {
   readonly port: number
   readonly databaseFile: string
+  readonly slackAppToken: string | null
   readonly slackUserToken: string | null
-  readonly slackPublicPollSeconds: number
-  readonly slackPublicPollDays: number
   readonly mySlackUserId: string
   readonly linearApiKey: string | null
   readonly linearWorkspaceUrl: string | null
@@ -42,9 +41,8 @@ export const readConfig = (): AppConfig => {
   return {
     port: envNumber("PORT", 8787),
     databaseFile: envString("DATABASE_FILE") ?? "./slack-thread-monitor.sqlite",
+    slackAppToken: envString("SLACK_APP_TOKEN"),
     slackUserToken: envString("SLACK_USER_TOKEN"),
-    slackPublicPollSeconds: envNumber("SLACK_PUBLIC_POLL_SECONDS", 60),
-    slackPublicPollDays: envNumber("SLACK_PUBLIC_POLL_DAYS", 1),
     mySlackUserId,
     linearApiKey: envString("LINEAR_API_KEY"),
     linearWorkspaceUrl: envString("LINEAR_WORKSPACE_URL"),

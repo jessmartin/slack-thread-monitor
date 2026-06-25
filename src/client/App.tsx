@@ -1,4 +1,4 @@
-import { CheckCircle2, Clock3, ExternalLink, Inbox, RefreshCw, Settings as SettingsIcon } from "lucide-react"
+import { CheckCircle2, Clock3, ExternalLink, Inbox, Settings as SettingsIcon } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
 import { buildSlackNativeMessageUrl, parseSlackText, readableSlackActorLabel } from "../shared/slack"
 import { cardStatuses, statusLabels, type AppMetaResponse, type BackfillResponse, type CardStatus, type CardsResponse, type SettingsResponse, type SettingsUpdateRequest, type SlackWorkspace, type ThreadCard, type TrackedSlackUser } from "../shared/types"
@@ -62,16 +62,6 @@ const runBackfill = async (days: number): Promise<BackfillResponse> => {
   })
   if (!response.ok) {
     throw new Error("Backfill failed")
-  }
-  return await response.json()
-}
-
-const runSlackSync = async (): Promise<BackfillResponse> => {
-  const response = await fetch("/api/sync", {
-    method: "POST"
-  })
-  if (!response.ok) {
-    throw new Error("Slack refresh failed")
   }
   return await response.json()
 }
@@ -335,7 +325,6 @@ interface SettingsViewProps {
 
 function SettingsView({ onTrackedUserChanged }: SettingsViewProps) {
   const [slackUserId, setSlackUserId] = useState("")
-  const [pollSeconds, setPollSeconds] = useState("60")
   const [workspace, setWorkspace] = useState<SlackWorkspace | null>(null)
   const [days, setDays] = useState("14")
   const [busy, setBusy] = useState(false)
@@ -346,7 +335,6 @@ function SettingsView({ onTrackedUserChanged }: SettingsViewProps) {
     loadSettings()
       .then((settings) => {
         setSlackUserId(settings.slackUserId)
-        setPollSeconds(String(settings.slackPublicPollSeconds))
         setWorkspace(settings.workspace)
         onTrackedUserChanged(settings.trackedUser)
       })
@@ -358,25 +346,6 @@ function SettingsView({ onTrackedUserChanged }: SettingsViewProps) {
     try {
       const settings = await saveSettings({ slackUserId })
       setSlackUserId(settings.slackUserId)
-      setPollSeconds(String(settings.slackPublicPollSeconds))
-      setWorkspace(settings.workspace)
-      onTrackedUserChanged(settings.trackedUser)
-      setMessage("Saved.")
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to save settings")
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const savePolling = async () => {
-    const parsedPollSeconds = Number.parseFloat(pollSeconds)
-    setBusy(true)
-    try {
-      const settings = await saveSettings({ slackPublicPollSeconds: parsedPollSeconds })
-      setSlackUserId(settings.slackUserId)
-      setPollSeconds(String(settings.slackPublicPollSeconds))
       setWorkspace(settings.workspace)
       onTrackedUserChanged(settings.trackedUser)
       setMessage("Saved.")
@@ -452,26 +421,8 @@ function SettingsView({ onTrackedUserChanged }: SettingsViewProps) {
         </div>
         <p className="settings-note">
           Changing this switches which Slack user the board watches for new activity. Existing cards stay where they
-          are; run Backfill after saving to add recent threads for the new user, or Clear DB to start over. In Slack,
-          open the person&apos;s profile, click More, then Copy member ID.
+          are; run Backfill after saving to add recent threads for the new user, or Clear DB to start over.
         </p>
-      </div>
-
-      <div className="settings-group">
-        <label htmlFor="public-poll-seconds">Public poll seconds</label>
-        <div className="settings-row">
-          <input
-            id="public-poll-seconds"
-            min="0"
-            onChange={(event) => setPollSeconds(event.target.value)}
-            step="1"
-            type="number"
-            value={pollSeconds}
-          />
-          <button disabled={busy} onClick={() => void savePolling()} type="button">
-            Save
-          </button>
-        </div>
       </div>
 
       <div className="settings-group">
@@ -506,7 +457,6 @@ export function App() {
   const [draggedThreadKey, setDraggedThreadKey] = useState<string | null>(null)
   const [trackedUser, setTrackedUser] = useState<TrackedSlackUser | null>(null)
   const [path, setPath] = useState(window.location.pathname)
-  const [syncing, setSyncing] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -552,19 +502,6 @@ export function App() {
     await refresh()
   }, [refresh])
 
-  const syncAndRefresh = useCallback(async () => {
-    setSyncing(true)
-    try {
-      await runSlackSync()
-      await refresh()
-      setError(null)
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to refresh Slack")
-    } finally {
-      setSyncing(false)
-    }
-  }, [refresh])
-
   const dropCard = useCallback(async (status: CardStatus) => {
     if (draggedThreadKey === null) {
       return
@@ -599,29 +536,17 @@ export function App() {
               Board
             </a>
           ) : (
-            <>
-              <a
-                aria-label="Settings"
-                className="settings-icon-button"
-                href="/settings"
-                onClick={(event) => {
-                  event.preventDefault()
-                  navigate("/settings")
-                }}
-              >
-                <SettingsIcon size={17} />
-              </a>
-              <button
-                type="button"
-                className="refresh-button"
-                disabled={syncing}
-                onClick={() => void syncAndRefresh()}
-                title="Scan Slack now"
-              >
-                <RefreshCw size={16} />
-                {syncing ? "Refreshing Slack..." : "Refresh Slack"}
-              </button>
-            </>
+            <a
+              aria-label="Settings"
+              className="settings-icon-button"
+              href="/settings"
+              onClick={(event) => {
+                event.preventDefault()
+                navigate("/settings")
+              }}
+            >
+              <SettingsIcon size={17} />
+            </a>
           )}
         </div>
       </header>
