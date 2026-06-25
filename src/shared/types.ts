@@ -49,6 +49,46 @@ export interface CardsResponse {
   readonly cards: ReadonlyArray<ThreadCard>
 }
 
+export interface TrackedSlackUser {
+  readonly id: string
+  readonly name: string | null
+  readonly imageUrl: string | null
+}
+
+export interface SlackWorkspace {
+  readonly id: string | null
+  readonly name: string | null
+  readonly url: string | null
+}
+
+export interface AppMetaResponse {
+  readonly trackedUser: TrackedSlackUser
+}
+
+export interface SettingsResponse {
+  readonly slackUserId: string
+  readonly slackPublicPollSeconds: number
+  readonly trackedUser: TrackedSlackUser
+  readonly workspace: SlackWorkspace
+}
+
+export interface SettingsUpdateRequest {
+  readonly slackUserId?: string
+  readonly slackPublicPollSeconds?: number
+}
+
+export interface BackfillRequest {
+  readonly days: number
+}
+
+export interface BackfillResponse {
+  readonly ok: true
+  readonly channelsScanned: number
+  readonly threadsScanned: number
+  readonly threadsCreated: number
+  readonly messagesIngested: number
+}
+
 export interface StatusUpdateRequest {
   readonly status: CardStatus
 }

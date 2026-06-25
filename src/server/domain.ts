@@ -1,4 +1,5 @@
 import type { CardStatus, ReferenceProvider, ReferenceType, ThreadReference } from "../shared/types"
+import { renderSlackPlainText } from "../shared/slack"
 
 export interface ExtractReferencesOptions {
   readonly linearWorkspaceUrl: string | null
@@ -20,6 +21,7 @@ export interface NormalizedSlackMessage {
   readonly messageTs: string
   readonly rootThreadTs: string
   readonly userId: string | null
+  readonly parentUserId: string | null
   readonly userName: string | null
   readonly text: string
   readonly rawJson: string
@@ -44,7 +46,7 @@ export const normalizeWhitespace = (value: string): string =>
   value.replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim()
 
 export const buildExcerpt = (value: string, maxLines = 4, maxChars = 360): string => {
-  const normalized = normalizeWhitespace(value)
+  const normalized = normalizeWhitespace(renderSlackPlainText(value))
   const lines = normalized.split("\n").slice(0, maxLines)
   const excerpt = lines.join("\n")
   return excerpt.length > maxChars ? `${excerpt.slice(0, maxChars - 1)}...` : excerpt
@@ -57,9 +59,15 @@ export const shouldTrackMessage = (
   message: SlackMessageProjectionInput,
   existingCard: boolean
 ): boolean =>
-  existingCard || message.userId === message.mySlackUserId || isMentioned(message.text, message.mySlackUserId)
+  existingCard ||
+  message.userId === message.mySlackUserId ||
+  message.parentUserId === message.mySlackUserId ||
+  isMentioned(message.text, message.mySlackUserId)
 
-const trimUrl = (value: string): string => value.replace(/[>,.)\]]+$/g, "")
+const trimUrl = (value: string): string => {
+  const withoutSlackLabel = value.split("|")[0] ?? value
+  return withoutSlackLabel.replace(/[>,.)\]]+$/g, "")
+}
 
 const normalizeLinearBase = (value: string | null): string | null => {
   if (value === null || value.trim() === "") {
@@ -76,11 +84,21 @@ const addUnique = (
   draft: ReferenceDraft
 ): ReadonlyArray<ReferenceDraft> => {
   const exists = existing.some((reference) =>
-    reference.provider === draft.provider &&
-    reference.url === draft.url &&
-    reference.displayKey === draft.displayKey
+    reference.provider === draft.provider && reference.displayKey === draft.displayKey
   )
-  return exists ? existing : [...existing, draft]
+  if (!exists) {
+    return [...existing, draft]
+  }
+
+  return existing.map((reference) => {
+    if (reference.provider !== draft.provider || reference.displayKey !== draft.displayKey) {
+      return reference
+    }
+    if (draft.referenceType === "pull_request" && reference.referenceType !== "pull_request") {
+      return draft
+    }
+    return draft.url.length > reference.url.length ? draft : reference
+  })
 }
 
 export const extractReferences = (
@@ -90,7 +108,7 @@ export const extractReferences = (
   const linearWorkspaceUrl = normalizeLinearBase(options.linearWorkspaceUrl)
   let references: ReadonlyArray<ReferenceDraft> = []
 
-  for (const match of text.matchAll(/https:\/\/linear\.app\/[^\s<>)]+/g)) {
+  for (const match of text.matchAll(/https:\/\/linear\.app\/[^\s<>|)]+/g)) {
     const url = trimUrl(match[0])
     const issueId = /([A-Z][A-Z0-9]+-\d+)/.exec(url)?.[1] ?? "Linear"
     references = addUnique(references, {

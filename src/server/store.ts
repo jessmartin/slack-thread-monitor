@@ -50,16 +50,68 @@ export interface ReferenceMetadataInput {
   readonly state: string | null
 }
 
+const slackUserIdSettingKey = "slack_user_id"
+const slackPublicPollSecondsSettingKey = "slack_public_poll_seconds"
+
 const nowIso = Effect.sync(() => new Date().toISOString())
 
 const referenceFromRow = (row: ReferenceRow): ThreadReference => ({
   provider: row.provider === "linear" ? "linear" : "github",
   referenceType: row.reference_type === "pull_request" ? "pull_request" : row.reference_type === "url" ? "url" : "issue",
   displayKey: row.display_key,
-  url: row.url,
+  url: cleanReferenceUrl(row.url),
   title: row.title,
   state: row.state
 })
+
+const cleanReferenceUrl = (value: string): string => {
+  const withoutSlackLabel = value.split("|")[0] ?? value
+  return withoutSlackLabel.replace(/[>,.)\]]+$/g, "")
+}
+
+const referenceIdentity = (reference: ThreadReference): string =>
+  `${reference.provider}:${reference.displayKey}`
+
+const shouldPreferReference = (
+  next: ThreadReference,
+  current: ThreadReference
+): boolean => {
+  if (next.referenceType === "pull_request" && current.referenceType !== "pull_request") {
+    return true
+  }
+  if (current.title === null && next.title !== null) {
+    return true
+  }
+  if (current.state === null && next.state !== null) {
+    return true
+  }
+  if (current.url.includes("|") && !next.url.includes("|")) {
+    return true
+  }
+  if (!current.url.includes("|") && next.url.includes("|")) {
+    return false
+  }
+  return next.url.length > current.url.length
+}
+
+const dedupeThreadReferences = (
+  references: ReadonlyArray<ThreadReference>
+): ReadonlyArray<ThreadReference> => {
+  let deduped: ReadonlyArray<ThreadReference> = []
+
+  for (const reference of references) {
+    const existing = deduped.find((candidate) => referenceIdentity(candidate) === referenceIdentity(reference))
+    if (existing === undefined) {
+      deduped = [...deduped, reference]
+    } else if (shouldPreferReference(reference, existing)) {
+      deduped = deduped.map((candidate) =>
+        referenceIdentity(candidate) === referenceIdentity(reference) ? reference : candidate
+      )
+    }
+  }
+
+  return deduped
+}
 
 const cardFromRow = (
   row: CardRow,
@@ -78,7 +130,7 @@ const cardFromRow = (
   lastMessageText: row.last_message_text,
   lastMessageExcerpt: row.last_message_text === null ? null : buildExcerpt(row.last_message_text),
   slackPermalink: row.slack_permalink,
-  references,
+  references: dedupeThreadReferences(references),
   updatedAt: row.updated_at
 })
 
@@ -159,6 +211,132 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             unique(thread_key, provider, url)
           )
         `
+        yield* sql`
+          create table if not exists app_settings (
+            key text primary key,
+            value text not null,
+            updated_at text not null
+          )
+        `
+      }),
+
+      ensureSlackUserId: Effect.fn("ThreadStore.ensureSlackUserId")(function*(slackUserId: string) {
+        const sql = yield* SqlClient.SqlClient
+        const now = yield* nowIso
+        yield* sql`
+          insert into app_settings (
+            key,
+            value,
+            updated_at
+          ) values (
+            ${slackUserIdSettingKey},
+            ${slackUserId},
+            ${now}
+          )
+          on conflict(key) do nothing
+        `
+      }),
+
+      ensureSlackPublicPollSeconds: Effect.fn("ThreadStore.ensureSlackPublicPollSeconds")(function*(seconds: number) {
+        const sql = yield* SqlClient.SqlClient
+        const now = yield* nowIso
+        yield* sql`
+          insert into app_settings (
+            key,
+            value,
+            updated_at
+          ) values (
+            ${slackPublicPollSecondsSettingKey},
+            ${String(Math.max(0, Math.floor(seconds)))},
+            ${now}
+          )
+          on conflict(key) do nothing
+        `
+      }),
+
+      getSlackUserId: Effect.fn("ThreadStore.getSlackUserId")(function*(fallback: string) {
+        const sql = yield* SqlClient.SqlClient
+        const rows = yield* sql<{ readonly value: string }>`
+          select value from app_settings where key = ${slackUserIdSettingKey} limit 1
+        `
+        return rows[0]?.value ?? fallback
+      }),
+
+      getSlackPublicPollSeconds: Effect.fn("ThreadStore.getSlackPublicPollSeconds")(function*(fallback: number) {
+        const sql = yield* SqlClient.SqlClient
+        const rows = yield* sql<{ readonly value: string }>`
+          select value from app_settings where key = ${slackPublicPollSecondsSettingKey} limit 1
+        `
+        const parsed = Number.parseInt(rows[0]?.value ?? "", 10)
+        return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+      }),
+
+      setSlackUserId: Effect.fn("ThreadStore.setSlackUserId")(function*(slackUserId: string) {
+        const sql = yield* SqlClient.SqlClient
+        const now = yield* nowIso
+        yield* sql`
+          insert into app_settings (
+            key,
+            value,
+            updated_at
+          ) values (
+            ${slackUserIdSettingKey},
+            ${slackUserId},
+            ${now}
+          )
+          on conflict(key) do update set
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        `
+      }),
+
+      setSlackPublicPollSeconds: Effect.fn("ThreadStore.setSlackPublicPollSeconds")(function*(seconds: number) {
+        const sql = yield* SqlClient.SqlClient
+        const now = yield* nowIso
+        yield* sql`
+          insert into app_settings (
+            key,
+            value,
+            updated_at
+          ) values (
+            ${slackPublicPollSecondsSettingKey},
+            ${String(Math.max(0, Math.floor(seconds)))},
+            ${now}
+          )
+          on conflict(key) do update set
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        `
+      }),
+
+      clearDatabase: Effect.fn("ThreadStore.clearDatabase")(function*() {
+        const sql = yield* SqlClient.SqlClient
+        const settings = yield* sql<{ readonly key: string; readonly value: string }>`
+          select key, value from app_settings
+        `
+
+        yield* sql`delete from thread_references`
+        yield* sql`delete from thread_messages`
+        yield* sql`delete from thread_cards`
+        yield* sql`delete from manual_actions`
+        yield* sql`delete from slack_events`
+        yield* sql`delete from app_settings`
+
+        const now = yield* nowIso
+        yield* Effect.forEach(settings, (setting) =>
+          sql`
+            insert into app_settings (
+              key,
+              value,
+              updated_at
+            ) values (
+              ${setting.key},
+              ${setting.value},
+              ${now}
+            )
+          `,
+          { discard: true }
+        )
       }),
 
       cardExists: Effect.fn("ThreadStore.cardExists")(function*(threadKey: string) {
@@ -242,13 +420,42 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             team_id = excluded.team_id,
             channel_id = excluded.channel_id,
             channel_name = coalesce(excluded.channel_name, thread_cards.channel_name),
-            status = 'new_message',
-            last_message_at = excluded.last_message_at,
-            last_message_user_id = excluded.last_message_user_id,
-            last_message_user_name = coalesce(excluded.last_message_user_name, thread_cards.last_message_user_name),
-            last_message_text = excluded.last_message_text,
-            slack_permalink = coalesce(thread_cards.slack_permalink, excluded.slack_permalink),
-            updated_at = excluded.updated_at
+            status = case
+              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              then 'new_message'
+              else thread_cards.status
+            end,
+            last_message_at = case
+              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              then excluded.last_message_at
+              else thread_cards.last_message_at
+            end,
+            last_message_user_id = case
+              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              then excluded.last_message_user_id
+              else thread_cards.last_message_user_id
+            end,
+            last_message_user_name = case
+              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              then coalesce(excluded.last_message_user_name, thread_cards.last_message_user_name)
+              when thread_cards.last_message_user_name is null
+              then excluded.last_message_user_name
+              else thread_cards.last_message_user_name
+            end,
+            last_message_text = case
+              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              then excluded.last_message_text
+              else thread_cards.last_message_text
+            end,
+            slack_permalink = case
+              when thread_cards.slack_permalink like 'slack://%' then coalesce(excluded.slack_permalink, thread_cards.slack_permalink)
+              else coalesce(thread_cards.slack_permalink, excluded.slack_permalink)
+            end,
+            updated_at = case
+              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              then excluded.updated_at
+              else thread_cards.updated_at
+            end
         `
 
         yield* sql`
@@ -364,7 +571,10 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
           on conflict(thread_key) do update set
             status = excluded.status,
             channel_name = coalesce(excluded.channel_name, thread_cards.channel_name),
-            slack_permalink = coalesce(thread_cards.slack_permalink, excluded.slack_permalink),
+            slack_permalink = case
+              when thread_cards.slack_permalink like 'slack://%' then coalesce(excluded.slack_permalink, thread_cards.slack_permalink)
+              else coalesce(thread_cards.slack_permalink, excluded.slack_permalink)
+            end,
             updated_at = excluded.updated_at
         `
 
@@ -433,7 +643,7 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
           where thread_key = ${threadKey}
           order by provider asc, display_key asc
         `
-        return references.map(referenceFromRow)
+        return dedupeThreadReferences(references.map(referenceFromRow))
       }),
 
       updateReferenceMetadata: Effect.fn("ThreadStore.updateReferenceMetadata")(function*(

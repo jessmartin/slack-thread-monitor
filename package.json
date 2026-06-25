@@ -16,7 +16,6 @@
     "@effect/platform-node": "^4.0.0-beta.88",
     "@effect/sql-sqlite-node": "^4.0.0-beta.88",
     "@hono/node-server": "^2.0.6",
-    "@slack/bolt": "^4.7.3",
     "dotenv": "^17.4.2",
     "effect": "^4.0.0-beta.88",
     "hono": "^4.12.27",
