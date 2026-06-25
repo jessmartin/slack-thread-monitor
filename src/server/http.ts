@@ -43,7 +43,7 @@ const parsePositiveDays = (value: unknown): number | null => {
 }
 
 const parseStatus = (value: string | null): CardStatus | null => {
-  if (value === "new_message" || value === "awaiting_reply" || value === "resolved") {
+  if (value === "new_message" || value === "awaiting_reply" || value === "resolved" || value === "archived") {
     return value
   }
   return null

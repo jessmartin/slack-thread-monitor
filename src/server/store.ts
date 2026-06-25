@@ -12,9 +12,14 @@ interface CardRow {
   readonly root_thread_ts: string
   readonly status: string
   readonly first_seen_at: string
+  readonly root_message_user_id: string | null
+  readonly root_message_user_name: string | null
+  readonly root_message_user_image_url: string | null
+  readonly root_message_text: string | null
   readonly last_message_at: string | null
   readonly last_message_user_id: string | null
   readonly last_message_user_name: string | null
+  readonly last_message_user_image_url: string | null
   readonly last_message_text: string | null
   readonly slack_permalink: string | null
   readonly updated_at: string
@@ -123,9 +128,15 @@ const cardFromRow = (
   rootThreadTs: row.root_thread_ts,
   status: parseCardStatus(row.status),
   firstSeenAt: row.first_seen_at,
+  rootMessageUserId: row.root_message_user_id,
+  rootMessageUserName: row.root_message_user_name,
+  rootMessageUserImageUrl: row.root_message_user_image_url,
+  rootMessageText: row.root_message_text,
+  rootMessageExcerpt: row.root_message_text === null ? null : buildExcerpt(row.root_message_text, 8, 900),
   lastMessageAt: row.last_message_at,
   lastMessageUserId: row.last_message_user_id,
   lastMessageUserName: row.last_message_user_name,
+  lastMessageUserImageUrl: row.last_message_user_image_url,
   lastMessageText: row.last_message_text,
   lastMessageExcerpt: row.last_message_text === null ? null : buildExcerpt(row.last_message_text),
   slackPermalink: row.slack_permalink,
@@ -176,14 +187,35 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             root_thread_ts text not null,
             status text not null,
             first_seen_at text not null,
+            root_message_user_id text,
+            root_message_user_name text,
+            root_message_user_image_url text,
+            root_message_text text,
             last_message_at text,
             last_message_user_id text,
             last_message_user_name text,
+            last_message_user_image_url text,
             last_message_text text,
             slack_permalink text,
             updated_at text not null
           )
         `
+        const cardColumns = yield* sql<{ readonly name: string }>`pragma table_info(thread_cards)`
+        if (!cardColumns.some((column) => column.name === "last_message_user_image_url")) {
+          yield* sql`alter table thread_cards add column last_message_user_image_url text`
+        }
+        if (!cardColumns.some((column) => column.name === "root_message_user_id")) {
+          yield* sql`alter table thread_cards add column root_message_user_id text`
+        }
+        if (!cardColumns.some((column) => column.name === "root_message_user_name")) {
+          yield* sql`alter table thread_cards add column root_message_user_name text`
+        }
+        if (!cardColumns.some((column) => column.name === "root_message_user_image_url")) {
+          yield* sql`alter table thread_cards add column root_message_user_image_url text`
+        }
+        if (!cardColumns.some((column) => column.name === "root_message_text")) {
+          yield* sql`alter table thread_cards add column root_message_text text`
+        }
         yield* sql`
           create table if not exists thread_messages (
             id integer primary key autoincrement,
@@ -236,7 +268,7 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
         `
       }),
 
-      getSlackUserId: Effect.fn("ThreadStore.getSlackUserId")(function*(fallback: string) {
+      getSlackUserId: Effect.fn("ThreadStore.getSlackUserId")(function*(fallback: string | null) {
         const sql = yield* SqlClient.SqlClient
         const rows = yield* sql<{ readonly value: string }>`
           select value from app_settings where key = ${slackUserIdSettingKey} limit 1
@@ -349,9 +381,14 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             root_thread_ts,
             status,
             first_seen_at,
+            root_message_user_id,
+            root_message_user_name,
+            root_message_user_image_url,
+            root_message_text,
             last_message_at,
             last_message_user_id,
             last_message_user_name,
+            last_message_user_image_url,
             last_message_text,
             slack_permalink,
             updated_at
@@ -363,9 +400,14 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             ${message.rootThreadTs},
             ${"new_message"},
             ${now},
+            ${message.messageTs === message.rootThreadTs ? message.userId : null},
+            ${message.messageTs === message.rootThreadTs ? message.userName : null},
+            ${message.messageTs === message.rootThreadTs ? message.userImageUrl : null},
+            ${message.messageTs === message.rootThreadTs ? message.text : null},
             ${message.eventTs},
             ${message.userId},
             ${message.userName},
+            ${message.userImageUrl},
             ${message.text},
             ${message.slackPermalink},
             ${now}
@@ -374,6 +416,10 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             team_id = excluded.team_id,
             channel_id = excluded.channel_id,
             channel_name = coalesce(excluded.channel_name, thread_cards.channel_name),
+            root_message_user_id = coalesce(thread_cards.root_message_user_id, excluded.root_message_user_id),
+            root_message_user_name = coalesce(thread_cards.root_message_user_name, excluded.root_message_user_name),
+            root_message_user_image_url = coalesce(thread_cards.root_message_user_image_url, excluded.root_message_user_image_url),
+            root_message_text = coalesce(thread_cards.root_message_text, excluded.root_message_text),
             status = case
               when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
               then 'new_message'
@@ -395,6 +441,13 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
               when thread_cards.last_message_user_name is null
               then excluded.last_message_user_name
               else thread_cards.last_message_user_name
+            end,
+            last_message_user_image_url = case
+              when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
+              then coalesce(excluded.last_message_user_image_url, thread_cards.last_message_user_image_url)
+              when thread_cards.last_message_user_image_url is null
+              then excluded.last_message_user_image_url
+              else thread_cards.last_message_user_image_url
             end,
             last_message_text = case
               when cast(excluded.last_message_at as real) > cast(coalesce(thread_cards.last_message_at, '0') as real)
@@ -501,9 +554,14 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             root_thread_ts,
             status,
             first_seen_at,
+            root_message_user_id,
+            root_message_user_name,
+            root_message_user_image_url,
+            root_message_text,
             last_message_at,
             last_message_user_id,
             last_message_user_name,
+            last_message_user_image_url,
             last_message_text,
             slack_permalink,
             updated_at
@@ -515,8 +573,13 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             ${input.rootThreadTs},
             ${input.status},
             ${now},
+            ${null},
+            ${null},
+            ${null},
+            ${null},
             ${now},
             ${input.actorUserId},
+            ${null},
             ${null},
             ${input.fallbackText},
             ${input.slackPermalink},
@@ -546,18 +609,25 @@ export class ThreadStore extends Context.Service<ThreadStore>()(
             root_thread_ts,
             status,
             first_seen_at,
+            root_message_user_id,
+            root_message_user_name,
+            root_message_user_image_url,
+            root_message_text,
             last_message_at,
             last_message_user_id,
             last_message_user_name,
+            last_message_user_image_url,
             last_message_text,
             slack_permalink,
             updated_at
           from thread_cards
+          where status <> 'archived'
           order by
             case status
               when 'new_message' then 0
               when 'awaiting_reply' then 1
-              else 2
+              when 'resolved' then 2
+              else 3
             end,
             coalesce(last_message_at, updated_at) desc
         `

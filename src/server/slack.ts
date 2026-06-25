@@ -12,6 +12,16 @@ import { ThreadWorkflows } from "./workflows"
 
 type SlackTokenKind = "app" | "user"
 
+interface SlackAuthIdentity {
+  readonly workspace: SlackWorkspace
+  readonly userId: string | null
+}
+
+interface SlackActorProfile {
+  readonly name: string | null
+  readonly imageUrl: string | null
+}
+
 const ignoredMessageSubtypes = new Set([
   "channel_archive",
   "channel_join",
@@ -106,6 +116,20 @@ const getSlackEventActorName = (event: unknown): string | null => {
     readableSlackActorLabel(getStringField(event, "username"))
 }
 
+const getSlackEventActorImageUrl = (event: unknown): string | null => {
+  const botProfile = getObjectField(event, "bot_profile")
+  const icons = getObjectField(botProfile, "icons")
+  return getStringField(icons, "image_72") ??
+    getStringField(icons, "image_48") ??
+    getStringField(botProfile, "image_72") ??
+    getStringField(botProfile, "image_48")
+}
+
+const getSlackEventActorProfile = (event: unknown): SlackActorProfile => ({
+  name: getSlackEventActorName(event),
+  imageUrl: getSlackEventActorImageUrl(event)
+})
+
 const getSlackUserProfileName = (user: unknown): string | null => {
   const profile = getObjectField(user, "profile")
   return readableSlackActorLabel(getStringField(profile, "display_name_normalized")) ??
@@ -121,6 +145,22 @@ const trackedUserFromSlackUser = (slackUserId: string, user: unknown): TrackedSl
     id: slackUserId,
     name: getSlackUserProfileName(user),
     imageUrl: getStringField(profile, "image_72") ?? getStringField(profile, "image_48")
+  }
+}
+
+const actorProfileFromSlackUser = (user: unknown): SlackActorProfile => {
+  const profile = getObjectField(user, "profile")
+  return {
+    name: getSlackUserProfileName(user),
+    imageUrl: getStringField(profile, "image_72") ?? getStringField(profile, "image_48")
+  }
+}
+
+const actorProfileFromSlackBot = (bot: unknown): SlackActorProfile => {
+  const icons = getObjectField(bot, "icons")
+  return {
+    name: readableSlackActorLabel(getStringField(bot, "name")),
+    imageUrl: getStringField(icons, "image_72") ?? getStringField(icons, "image_48")
   }
 }
 
@@ -197,6 +237,19 @@ const slackAuthTest = Effect.fn("SlackApiClient.authTest")(function*() {
   }
 })
 
+const slackAuthIdentity = Effect.fn("SlackApiClient.authIdentity")(function*() {
+  const body = yield* slackApiCall("auth.test", {}, "user")
+  const identity: SlackAuthIdentity = {
+    workspace: {
+      id: getStringField(body, "team_id"),
+      name: getStringField(body, "team"),
+      url: getStringField(body, "url")
+    },
+    userId: getStringField(body, "user_id")
+  }
+  return identity
+})
+
 const slackActorName = Effect.fn("SlackApiClient.getActorName")(function*(actorId: string | null) {
   if (actorId === null) {
     return null
@@ -210,6 +263,28 @@ const slackActorName = Effect.fn("SlackApiClient.getActorName")(function*(actorI
 
   const body = yield* slackApiCall("users.info", { user: actorId }, "user")
   return getSlackUserProfileName(getObjectField(body, "user")) ?? readableSlackActorLabel(actorId)
+})
+
+const slackActorProfile = Effect.fn("SlackApiClient.getActorProfile")(function*(actorId: string | null) {
+  if (actorId === null) {
+    return {
+      name: null,
+      imageUrl: null
+    }
+  }
+
+  if (actorId.startsWith("B")) {
+    const body = yield* slackApiCall("bots.info", { bot: actorId }, "user")
+    return actorProfileFromSlackBot(getObjectField(body, "bot"))
+  }
+
+  const body = yield* slackApiCall("users.info", { user: actorId }, "user")
+  return actorProfileFromSlackUser(getObjectField(body, "user"))
+})
+
+const slackActorProfileFromName = (name: string | null): SlackActorProfile => ({
+  name,
+  imageUrl: null
 })
 
 const slackChannelName = Effect.fn("SlackApiClient.getChannelName")(function*(channelId: string) {
@@ -243,8 +318,10 @@ export class SlackApiClient extends Context.Service<SlackApiClient>()(
   {
     make: Effect.succeed({
       apiCall: slackApiCall,
+      authIdentity: slackAuthIdentity,
       authTest: slackAuthTest,
       getActorName: slackActorName,
+      getActorProfile: slackActorProfile,
       getChannelName: slackChannelName,
       getUser: slackUser,
       openSocketUrl: slackSocketUrl,
@@ -280,7 +357,7 @@ const slackMessageFromApiMessage = (
   channelId: string,
   channelName: string | null,
   rootThreadTs: string,
-  userName: string | null,
+  actorProfile: SlackActorProfile,
   fallbackMySlackUserId: string,
   linearWorkspaceUrl: string | null
 ): SlackMessageProjectionInput | null => {
@@ -302,7 +379,8 @@ const slackMessageFromApiMessage = (
     rootThreadTs,
     userId,
     parentUserId: getStringField(message, "parent_user_id"),
-    userName,
+    userName: actorProfile.name,
+    userImageUrl: actorProfile.imageUrl,
     text: getStringField(message, "text") ?? "",
     rawJson: stringifySlackPayload({
       team_id: teamId,
@@ -394,14 +472,16 @@ const backfillProgram = (days: number) =>
           (getStringField(left, "ts") ?? "").localeCompare(getStringField(right, "ts") ?? "")
         )) {
           const userId = getStringField(reply, "user") ?? getStringField(reply, "bot_id")
-          const userName = yield* slack.getActorName(userId).pipe(Effect.catchCause(() => Effect.succeed(null)))
+          const actorProfile = yield* slack.getActorProfile(userId).pipe(
+            Effect.catchCause(() => Effect.succeed(slackActorProfileFromName(null)))
+          )
           const normalized = slackMessageFromApiMessage(
             reply,
             workspace.id,
             channelId,
             channelName,
             rootTs,
-            userName,
+            actorProfile,
             trackedSlackUserId,
             config.linearWorkspaceUrl
           )
@@ -438,17 +518,17 @@ export const backfillSlackThreads = async (
 ): Promise<BackfillResponse> =>
   await runtime.runPromise(backfillProgram(days))
 
-const cachedLookup = (
-  cache: Map<string, Promise<string | null>>,
+const cachedLookup = <Value>(
+  cache: Map<string, Promise<Value>>,
   key: string,
-  load: () => Promise<string | null>
-): Promise<string | null> => {
+  load: () => Promise<Value>
+): Promise<Value> => {
   const existing = cache.get(key)
   if (existing !== undefined) {
     return existing
   }
 
-  const loaded = load().catch(() => null)
+  const loaded = load()
   cache.set(key, loaded)
   return loaded
 }
@@ -486,19 +566,21 @@ const cachedChannelName = (
 
 const cachedActorName = (
   runtime: AppRuntime,
-  cache: Map<string, Promise<string | null>>,
+  cache: Map<string, Promise<SlackActorProfile>>,
   actorId: string | null,
   event: unknown
-): Promise<string | null> => {
-  const eventName = getSlackEventActorName(event)
-  if (eventName !== null || actorId === null) {
-    return Promise.resolve(eventName)
+): Promise<SlackActorProfile> => {
+  const eventProfile = getSlackEventActorProfile(event)
+  if (eventProfile.name !== null || eventProfile.imageUrl !== null || actorId === null) {
+    return Promise.resolve(eventProfile)
   }
 
   return cachedLookup(cache, actorId, () =>
     runtime.runPromise(
       SlackApiClient.use((slack) =>
-        slack.getActorName(actorId).pipe(Effect.catchCause(() => Effect.succeed(null)))
+        slack.getActorProfile(actorId).pipe(
+          Effect.catchCause(() => Effect.succeed(slackActorProfileFromName(null)))
+        )
       )
     )
   )
@@ -508,7 +590,7 @@ const socketMessageProjection = async (
   config: AppConfig,
   runtime: AppRuntime,
   channelNameCache: Map<string, Promise<string | null>>,
-  actorNameCache: Map<string, Promise<string | null>>,
+  actorNameCache: Map<string, Promise<SlackActorProfile>>,
   payload: unknown,
   event: unknown
 ): Promise<SlackMessageProjectionInput | null> => {
@@ -525,7 +607,7 @@ const socketMessageProjection = async (
   const rootThreadTs = getStringField(event, "thread_ts") ?? messageTs
   const teamId = getStringField(payload, "team_id") ?? getStringField(event, "team")
   const userId = getStringField(event, "user") ?? getStringField(event, "bot_id")
-  const [channelName, userName, trackedSlackUserId] = await Promise.all([
+  const [channelName, actorProfile, trackedSlackUserId] = await Promise.all([
     cachedChannelName(runtime, channelNameCache, channelId),
     cachedActorName(runtime, actorNameCache, userId, event),
     runtime.runPromise(ThreadWorkflows.use((workflows) => workflows.getTrackedSlackUserId()))
@@ -541,7 +623,8 @@ const socketMessageProjection = async (
     rootThreadTs,
     userId,
     parentUserId: getStringField(event, "parent_user_id"),
-    userName,
+    userName: actorProfile.name,
+    userImageUrl: actorProfile.imageUrl,
     text: getStringField(event, "text") ?? "",
     rawJson: stringifySlackPayload(payload),
     mySlackUserId: trackedSlackUserId,
@@ -571,7 +654,7 @@ export const startSlackEventListener = (
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let reconnectDelayMs = 1000
   const channelNameCache = new Map<string, Promise<string | null>>()
-  const actorNameCache = new Map<string, Promise<string | null>>()
+  const actorNameCache = new Map<string, Promise<SlackActorProfile>>()
 
   const scheduleReconnect = () => {
     if (stopped || reconnectTimer !== null) {

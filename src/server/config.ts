@@ -1,12 +1,11 @@
 import { Context, Layer } from "effect"
-import { ConfigError } from "./errors"
 
 export interface AppConfig {
   readonly port: number
   readonly databaseFile: string
   readonly slackAppToken: string | null
   readonly slackUserToken: string | null
-  readonly mySlackUserId: string
+  readonly mySlackUserId: string | null
   readonly linearApiKey: string | null
   readonly linearWorkspaceUrl: string | null
   readonly githubToken: string | null
@@ -33,17 +32,12 @@ const envNumber = (name: string, fallback: number): number => {
 }
 
 export const readConfig = (): AppConfig => {
-  const mySlackUserId = envString("MY_SLACK_USER_ID")
-  if (mySlackUserId === null) {
-    throw ConfigError.make({ message: "MY_SLACK_USER_ID is required" })
-  }
-
   return {
     port: envNumber("PORT", 8787),
     databaseFile: envString("DATABASE_FILE") ?? "./slack-thread-monitor.sqlite",
     slackAppToken: envString("SLACK_APP_TOKEN"),
     slackUserToken: envString("SLACK_USER_TOKEN"),
-    mySlackUserId,
+    mySlackUserId: envString("MY_SLACK_USER_ID"),
     linearApiKey: envString("LINEAR_API_KEY"),
     linearWorkspaceUrl: envString("LINEAR_WORKSPACE_URL"),
     githubToken: envString("GITHUB_TOKEN")

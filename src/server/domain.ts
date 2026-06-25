@@ -23,6 +23,7 @@ export interface NormalizedSlackMessage {
   readonly userId: string | null
   readonly parentUserId: string | null
   readonly userName: string | null
+  readonly userImageUrl: string | null
   readonly text: string
   readonly rawJson: string
 }
@@ -34,7 +35,7 @@ export interface SlackMessageProjectionInput extends NormalizedSlackMessage {
 }
 
 export const parseCardStatus = (value: string): CardStatus =>
-  value === "awaiting_reply" || value === "resolved" ? value : "new_message"
+  value === "awaiting_reply" || value === "resolved" || value === "archived" ? value : "new_message"
 
 export const buildThreadKey = (
   teamId: string | null,

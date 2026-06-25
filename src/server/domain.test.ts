@@ -14,6 +14,7 @@ describe("domain", () => {
     userId: "U2",
     parentUserId: null,
     userName: "Person",
+    userImageUrl: null,
     text: "hello",
     rawJson: "{}",
     mySlackUserId: "U1",
@@ -64,6 +65,7 @@ describe("domain", () => {
   it("parses unknown statuses as new message", () => {
     assert.strictEqual(parseCardStatus("awaiting_reply"), "awaiting_reply")
     assert.strictEqual(parseCardStatus("resolved"), "resolved")
+    assert.strictEqual(parseCardStatus("archived"), "archived")
     assert.strictEqual(parseCardStatus("unknown"), "new_message")
   })
 

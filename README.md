@@ -11,6 +11,7 @@ The app listens to Slack Events API messages over Socket Mode, stores raw Slack 
 - A card is created when the tracked Slack user authors a message, is mentioned, owns the parent/root message, or already has a card for that thread.
 - Any new message in a tracked thread moves the card back to `New Message`.
 - Cards can be moved to `Awaiting Reply` or `Resolved`.
+- Resolved cards can be archived to hide them from the board; archived cards return when a newer Slack message arrives.
 - Slack links use the native `slack://channel?...` URL so the Mac app opens by default.
 - Linear issue IDs/URLs and GitHub issue/PR references are extracted and deduplicated.
 - Optional Linear and GitHub tokens enrich references with title/state metadata.
@@ -24,19 +25,26 @@ The app listens to Slack Events API messages over Socket Mode, stores raw Slack 
 - `src/client/App.tsx` renders the board and settings UI.
 - `slack-app-manifest.yml` defines the Slack app scopes and user event subscriptions.
 
-## Install For Elicit Internal
+## Slack App Setup
 
-Create a Slack app in the **Elicit Internal** workspace:
+Create a Slack app in the target workspace. For current testing, that workspace is **Elicit Internal**.
 
 1. Open [api.slack.com/apps](https://api.slack.com/apps).
 2. Choose **Create New App**.
 3. Choose **From an app manifest**.
-4. Select the **Elicit Internal** workspace.
+4. Select the target workspace.
 5. Paste `slack-app-manifest.yml`.
 6. Create the app.
 7. On **Basic Information**, create an app-level token with `connections:write`. Copy the `xapp-...` token into `SLACK_APP_TOKEN`.
 8. On **OAuth & Permissions**, install the app to the workspace. Copy the **User OAuth Token** into `SLACK_USER_TOKEN`.
 9. Reinstall the app after any manifest or scope changes.
+
+The two Slack tokens are separate:
+
+- `SLACK_APP_TOKEN`: an `xapp-...` app-level token used only to open the Socket Mode connection.
+- `SLACK_USER_TOKEN`: an `xoxp-...` user OAuth token used to identify the authorized Slack user and make user-scoped Web API calls.
+
+`SLACK_APP_TOKEN` does not create or contain `SLACK_USER_TOKEN`. You get the user token by installing/authorizing the Slack app.
 
 The manifest subscribes to these user events:
 
@@ -76,9 +84,14 @@ Fill in `.env`:
 ```bash
 SLACK_APP_TOKEN=xapp-your-app-level-token
 SLACK_USER_TOKEN=xoxp-your-user-token
-MY_SLACK_USER_ID=U1234567890
 DATABASE_FILE=./slack-thread-monitor.sqlite
 PORT=8787
+```
+
+These are optional:
+
+```bash
+MY_SLACK_USER_ID=U1234567890
 LINEAR_API_KEY=
 LINEAR_WORKSPACE_URL=
 GITHUB_TOKEN=
@@ -100,7 +113,7 @@ The API listens on `http://127.0.0.1:8787`; Vite proxies local API calls there.
 
 ## Choosing The Tracked User
 
-`MY_SLACK_USER_ID` is the fallback user ID used at boot. The Settings page can change the tracked user later.
+By default, the app tracks the Slack user who authorized `SLACK_USER_TOKEN`. On first run, it calls Slack `auth.test`, stores that `user_id` locally, and uses it as the tracked user. No Slack user ID is required for normal setup.
 
 Because there are multiple Jess Martin accounts, verify the member ID carefully in Slack:
 
@@ -109,7 +122,9 @@ Because there are multiple Jess Martin accounts, verify the member ID carefully 
 3. Choose **Copy member ID**.
 4. Paste that value into `/settings`.
 
-Changing the tracked user affects future live events and future backfills. Existing cards stay in the local database until you move them or clear the DB.
+Changing the tracked user in `/settings` affects future live events and future backfills. Existing cards stay in the local database until you move them or clear the DB.
+
+Set `MY_SLACK_USER_ID=U1234567890` only when you want first run to track a different Slack account than the one that authorized `SLACK_USER_TOKEN`.
 
 ## Backfill
 

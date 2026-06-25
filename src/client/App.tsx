@@ -1,6 +1,6 @@
-import { CheckCircle2, Clock3, ExternalLink, Inbox, Settings as SettingsIcon } from "lucide-react"
+import { Archive, CheckCircle2, Clock3, ExternalLink, Inbox, Settings as SettingsIcon } from "lucide-react"
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react"
-import { buildSlackNativeMessageUrl, parseSlackText, readableSlackActorLabel } from "../shared/slack"
+import { buildSlackNativeMessageUrl, parseSlackText, readableSlackActorLabel, renderSlackPlainText } from "../shared/slack"
 import { cardStatuses, statusLabels, type AppMetaResponse, type BackfillResponse, type CardStatus, type CardsResponse, type SettingsResponse, type SettingsUpdateRequest, type SlackWorkspace, type ThreadCard, type TrackedSlackUser } from "../shared/types"
 
 const statusIcon = (status: CardStatus) => {
@@ -88,15 +88,22 @@ const updateStatus = async (threadKey: string, status: CardStatus): Promise<void
   }
 }
 
-const formatTimestamp = (value: string | null): string => {
+const slackTimestampDate = (value: string | null): Date | null => {
   if (value === null) {
-    return ""
+    return null
   }
   const date = new Date(Number(value.split(".")[0]) * 1000)
-  if (Number.isNaN(date.getTime())) {
-    return value
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+const formatAbsoluteTimestamp = (value: string | null): string => {
+  const date = slackTimestampDate(value)
+  if (date === null) {
+    return value ?? ""
   }
+
   return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -104,13 +111,65 @@ const formatTimestamp = (value: string | null): string => {
   }).format(date)
 }
 
+const formatTimeAgo = (value: string | null): string => {
+  const date = slackTimestampDate(value)
+  if (date === null) {
+    return ""
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - date.getTime())
+  const minutes = Math.max(1, Math.floor(elapsedMs / 60_000))
+  if (minutes < 60) {
+    return `${minutes}m ago`
+  }
+
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) {
+    return `${hours}h ago`
+  }
+
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
 const channelLabel = (card: ThreadCard): string =>
   card.channelName === null ? card.channelId : `#${card.channelName}`
 
-const authorLabel = (card: ThreadCard): string =>
-  readableSlackActorLabel(card.lastMessageUserName) ??
-  readableSlackActorLabel(card.lastMessageUserId) ??
-  "Unknown sender"
+const actorLabel = (
+  name: string | null,
+  id: string | null,
+  fallback: string
+): string =>
+  readableSlackActorLabel(name) ??
+  readableSlackActorLabel(id) ??
+  fallback
+
+const rootAuthorLabel = (card: ThreadCard): string =>
+  actorLabel(
+    card.rootMessageUserName ?? card.lastMessageUserName,
+    card.rootMessageUserId ?? card.lastMessageUserId,
+    "Unknown sender"
+  )
+
+const latestAuthorLabel = (card: ThreadCard): string =>
+  actorLabel(card.lastMessageUserName, card.lastMessageUserId, "Unknown sender")
+
+const rootAuthorImageUrl = (card: ThreadCard): string | null =>
+  card.rootMessageUserImageUrl ?? card.lastMessageUserImageUrl
+
+const rootMessageText = (card: ThreadCard): string | null =>
+  card.rootMessageText ?? card.lastMessageText
+
+const previewTitle = (text: string, maxLines: number, maxChars: number): string => {
+  const normalized = renderSlackPlainText(text)
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .trim()
+  const preview = normalized.split("\n").slice(0, maxLines).join("\n")
+  return preview.length > maxChars ? `${preview.slice(0, maxChars - 1)}...` : preview
+}
+
+const fallbackMessageText = "Original message unavailable"
 
 const initialsFor = (value: string): string => {
   const parts = value.trim().split(/\s+/).filter((part) => part.length > 0)
@@ -182,6 +241,23 @@ const isBrowserUrl = (url: string): boolean =>
 const slackThreadUrl = (card: ThreadCard): string | null =>
   buildSlackNativeMessageUrl(card.teamId, card.channelId, card.rootThreadTs) ?? card.slackPermalink
 
+interface ActorAvatarProps {
+  readonly imageUrl: string | null
+  readonly label: string
+}
+
+function ActorAvatar({ imageUrl, label }: ActorAvatarProps) {
+  if (imageUrl === null) {
+    return (
+      <span className="card-avatar-fallback" title={label}>
+        {initialsFor(label)}
+      </span>
+    )
+  }
+
+  return <img alt="" className="card-avatar" src={imageUrl} title={label} />
+}
+
 interface CardProps {
   readonly card: ThreadCard
   readonly onMove: (threadKey: string, status: CardStatus) => Promise<void>
@@ -190,6 +266,9 @@ interface CardProps {
 
 function ThreadCardView({ card, onMove, onDragStart }: CardProps) {
   const slackUrl = slackThreadUrl(card)
+  const rootAuthor = rootAuthorLabel(card)
+  const latestAuthor = latestAuthorLabel(card)
+  const originalText = rootMessageText(card)
 
   return (
     <article
@@ -197,28 +276,37 @@ function ThreadCardView({ card, onMove, onDragStart }: CardProps) {
       draggable
       onDragStart={() => onDragStart(card.threadKey)}
     >
-      <div className="card-topline">
-        <span className="channel">{channelLabel(card)}</span>
-        <span className="timestamp">{formatTimestamp(card.lastMessageAt)}</span>
+      <div className="root-message-row">
+        <ActorAvatar imageUrl={rootAuthorImageUrl(card)} label={rootAuthor} />
+        <div className="root-message-meta">
+          <div
+            className="root-message-text"
+            title={originalText === null ? fallbackMessageText : previewTitle(originalText, 8, 900)}
+          >
+            {originalText === null ? fallbackMessageText : renderSlackPreview(originalText)}
+          </div>
+          <div className="root-message-details">
+            <span className="root-author-name">{rootAuthor}</span>
+            <span className="root-detail-separator">·</span>
+            <span className="root-channel">{channelLabel(card)}</span>
+          </div>
+        </div>
       </div>
 
-      <div className="sender">{authorLabel(card)}</div>
-
       {card.lastMessageText !== null && (
-        <p className="excerpt">{renderSlackPreview(card.lastMessageText)}</p>
+        <div className="latest-comment">
+          <p className="latest-comment-text">{renderSlackPreview(card.lastMessageText)}</p>
+          <div className="latest-comment-meta">
+            <ActorAvatar imageUrl={card.lastMessageUserImageUrl} label={latestAuthor} />
+            <span className="latest-comment-sender">{latestAuthor}</span>
+            <span className="timestamp" title={formatAbsoluteTimestamp(card.lastMessageAt)}>
+              {formatTimeAgo(card.lastMessageAt)}
+            </span>
+          </div>
+        </div>
       )}
 
       <div className="links-row">
-        {slackUrl !== null && (
-          <a
-            className="pill slack-pill"
-            href={slackUrl}
-            rel={isBrowserUrl(slackUrl) ? "noreferrer" : undefined}
-            target={isBrowserUrl(slackUrl) ? "_blank" : undefined}
-          >
-            Slack <ExternalLink size={13} />
-          </a>
-        )}
         {card.references.map((reference) => (
           <a
             className={`pill ${reference.provider}-pill`}
@@ -236,17 +324,31 @@ function ThreadCardView({ card, onMove, onDragStart }: CardProps) {
       </div>
 
       <div className="card-actions">
-        {card.status !== "awaiting_reply" && (
-          <button type="button" className="icon-button" onClick={() => onMove(card.threadKey, "awaiting_reply")}>
-            <Clock3 size={15} />
-            Awaiting
-          </button>
-        )}
-        {card.status !== "resolved" && (
-          <button type="button" className="icon-button" onClick={() => onMove(card.threadKey, "resolved")}>
-            <CheckCircle2 size={15} />
-            Resolved
-          </button>
+        <div className="status-actions">
+          {card.status !== "awaiting_reply" && (
+            <button type="button" className="icon-button" onClick={() => onMove(card.threadKey, "awaiting_reply")}>
+              <Clock3 size={15} />
+              Awaiting
+            </button>
+          )}
+          {card.status !== "resolved" && (
+            <button type="button" className="icon-button" onClick={() => onMove(card.threadKey, "resolved")}>
+              <CheckCircle2 size={15} />
+              Resolved
+            </button>
+          )}
+        </div>
+        {slackUrl !== null && (
+          <a
+            aria-label="Open Slack thread"
+            className="slack-card-link slack-thread-action"
+            href={slackUrl}
+            rel={isBrowserUrl(slackUrl) ? "noreferrer" : undefined}
+            target={isBrowserUrl(slackUrl) ? "_blank" : undefined}
+            title="Open Slack thread"
+          >
+            <ExternalLink size={16} />
+          </a>
         )}
       </div>
     </article>
@@ -259,10 +361,11 @@ interface ColumnProps {
   readonly draggedThreadKey: string | null
   readonly onDropCard: (status: CardStatus) => Promise<void>
   readonly onMove: (threadKey: string, status: CardStatus) => Promise<void>
+  readonly onArchiveAll: () => Promise<void>
   readonly onDragStart: (threadKey: string) => void
 }
 
-function Column({ status, cards, draggedThreadKey, onDropCard, onMove, onDragStart }: ColumnProps) {
+function Column({ status, cards, draggedThreadKey, onArchiveAll, onDropCard, onMove, onDragStart }: ColumnProps) {
   return (
     <section
       className={`board-column column-${status}`}
@@ -278,7 +381,22 @@ function Column({ status, cards, draggedThreadKey, onDropCard, onMove, onDragSta
           {statusIcon(status)}
           <h2>{statusLabels[status]}</h2>
         </div>
-        <span className="count">{cards.length}</span>
+        <div className="column-header-actions">
+          {status === "resolved" && (
+            <button
+              aria-hidden={cards.length === 0}
+              className={`archive-all-button${cards.length === 0 ? " archive-all-button-hidden" : ""}`}
+              disabled={cards.length === 0}
+              onClick={() => void onArchiveAll()}
+              tabIndex={cards.length === 0 ? -1 : undefined}
+              type="button"
+            >
+              <Archive size={14} />
+              Archive all
+            </button>
+          )}
+          <span className="count">{cards.length}</span>
+        </div>
       </header>
       <div className="card-list">
         {cards.map((card) => (
@@ -502,6 +620,12 @@ export function App() {
     await refresh()
   }, [refresh])
 
+  const archiveResolved = useCallback(async () => {
+    const resolvedCards = cards.filter((card) => card.status === "resolved")
+    await Promise.all(resolvedCards.map((card) => updateStatus(card.threadKey, "archived")))
+    await refresh()
+  }, [cards, refresh])
+
   const dropCard = useCallback(async (status: CardStatus) => {
     if (draggedThreadKey === null) {
       return
@@ -562,6 +686,7 @@ export function App() {
                 cards={column.cards}
                 draggedThreadKey={draggedThreadKey}
                 key={column.status}
+                onArchiveAll={archiveResolved}
                 onDragStart={setDraggedThreadKey}
                 onDropCard={dropCard}
                 onMove={moveCard}

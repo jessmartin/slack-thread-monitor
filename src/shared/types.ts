@@ -1,17 +1,19 @@
-export type CardStatus = "new_message" | "awaiting_reply" | "resolved"
+export type CardStatus = "new_message" | "awaiting_reply" | "resolved" | "archived"
 
 export const cardStatuses: ReadonlyArray<CardStatus> = ["new_message", "awaiting_reply", "resolved"]
 
 export const statusLabels: Record<CardStatus, string> = {
   new_message: "New Message",
   awaiting_reply: "Awaiting Reply",
-  resolved: "Resolved"
+  resolved: "Resolved",
+  archived: "Archived"
 }
 
 export const statusDescriptions: Record<CardStatus, string> = {
   new_message: "Threads with new activity to process.",
   awaiting_reply: "Threads where the next move is with someone else.",
-  resolved: "Threads that are done for now."
+  resolved: "Threads that are done for now.",
+  archived: "Threads hidden from the board until new activity arrives."
 }
 
 export type ReferenceProvider = "github" | "linear"
@@ -35,9 +37,15 @@ export interface ThreadCard {
   readonly rootThreadTs: string
   readonly status: CardStatus
   readonly firstSeenAt: string
+  readonly rootMessageUserId: string | null
+  readonly rootMessageUserName: string | null
+  readonly rootMessageUserImageUrl: string | null
+  readonly rootMessageText: string | null
+  readonly rootMessageExcerpt: string | null
   readonly lastMessageAt: string | null
   readonly lastMessageUserId: string | null
   readonly lastMessageUserName: string | null
+  readonly lastMessageUserImageUrl: string | null
   readonly lastMessageText: string | null
   readonly lastMessageExcerpt: string | null
   readonly slackPermalink: string | null
